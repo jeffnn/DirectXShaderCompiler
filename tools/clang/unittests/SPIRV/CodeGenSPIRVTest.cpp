@@ -7,16 +7,55 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <fstream>
-
+#include "FileTestFixture.h"
 #include "WholeFileCheck.h"
-#include "gtest/gtest.h"
 
-TEST_F(WholeFileTest, BringUp) {
-  // Ideally all generated SPIR-V must be valid, but this currently fails with
-  // this error message: "No OpEntryPoint instruction was found...".
-  // TODO: change this test such that it does run validation.
-  bool success = runWholeFileTest("basic.hlsl2spv", /*generateHeader*/ true,
-                                  /*runValidation*/ false);
-  EXPECT_TRUE(success);
+namespace {
+using clang::spirv::FileTest;
+using clang::spirv::WholeFileTest;
+
+// === Whole output tests ===
+
+TEST_F(WholeFileTest, EmptyVoidMain) {
+  runWholeFileTest("empty-void-main.hlsl2spv", /*generateHeader*/ true);
 }
+
+TEST_F(WholeFileTest, PassThruPixelShader) {
+  runWholeFileTest("passthru-ps.hlsl2spv", /*generateHeader*/ true);
+}
+
+TEST_F(WholeFileTest, PassThruVertexShader) {
+  runWholeFileTest("passthru-vs.hlsl2spv", /*generateHeader*/ true);
+}
+
+TEST_F(WholeFileTest, ConstantPixelShader) {
+  runWholeFileTest("constant-ps.hlsl2spv", /*generateHeader*/ true);
+}
+
+// === Partial output tests ===
+
+TEST_F(FileTest, ScalarTypes) { runFileTest("type.scalar.hlsl"); }
+
+TEST_F(FileTest, ScalarConstants) { runFileTest("constant.scalar.hlsl"); }
+
+TEST_F(FileTest, UnaryOpPrefixIncrement) {
+  runFileTest("unary-op.prefix-inc.hlsl");
+}
+
+TEST_F(FileTest, BinaryOpAssign) { runFileTest("binary-op.assign.hlsl"); }
+
+TEST_F(FileTest, BinaryOpScalarArithmetic) {
+  runFileTest("binary-op.arithmetic.scalar.hlsl");
+}
+
+TEST_F(FileTest, BinaryOpScalarComparison) {
+  runFileTest("binary-op.comparison.scalar.hlsl");
+}
+
+TEST_F(FileTest, IfStmtPlainAssign) { runFileTest("if-stmt.plain.hlsl"); }
+
+TEST_F(FileTest, IfStmtNestedIfStmt) { runFileTest("if-stmt.nested.hlsl"); }
+
+TEST_F(FileTest, ForStmtPlainAssign) { runFileTest("for-stmt.plain.hlsl"); }
+
+} // namespace

@@ -111,6 +111,12 @@ void Utf8ToBlob(dxc::DxcDllSupport &dllSupport, const std::string &val, _Outptr_
 void Utf8ToBlob(dxc::DxcDllSupport &dllSupport, const char *pVal, _Outptr_ IDxcBlobEncoding **ppBlob);
 void Utf16ToBlob(dxc::DxcDllSupport &dllSupport, const std::wstring &val, _Outptr_ IDxcBlob **ppBlob);
 void Utf16ToBlob(dxc::DxcDllSupport &dllSupport, const std::wstring &val, _Outptr_ IDxcBlobEncoding **ppBlob);
+void VerifyCompileOK(dxc::DxcDllSupport &dllSupport, LPCSTR pText,
+                     LPWSTR pTargetProfile, LPCWSTR pArgs,
+                     _Outptr_ IDxcBlob **ppResult);
+void VerifyCompileOK(dxc::DxcDllSupport &dllSupport, LPCSTR pText,
+                     LPWSTR pTargetProfile, std::vector<LPCWSTR> &args,
+                     _Outptr_ IDxcBlob **ppResult);
 
 class VersionSupportInfo {
 private:
@@ -125,8 +131,8 @@ public:
   void Initialize(dxc::DxcDllSupport &dllSupport);
   // Return true if IR sensitive test should be skipped, and log comment
   bool SkipIRSensitiveTest();
-  // Return true if DXIL 1.1 test should be skipped, and log comment
-  bool SkipDxil_1_1_Test();
+  // Return true if test requiring DXIL of given version should be skipped, and log comment
+  bool SkipDxilVersion(unsigned major, unsigned minor);
   // Return true if out-of-memory test should be skipped, and log comment
   bool SkipOutOfMemoryTest();
 };

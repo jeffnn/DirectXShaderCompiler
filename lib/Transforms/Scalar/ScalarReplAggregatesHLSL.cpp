@@ -49,6 +49,7 @@
 #include "dxc/HLSL/HLOperations.h"
 #include "dxc/HLSL/DxilConstants.h"
 #include "dxc/HLSL/HLModule.h"
+#include "dxc/HLSL/DxilUtil.h"
 #include "dxc/HLSL/DxilModule.h"
 #include "dxc/HlslIntrinsicOp.h"
 #include "dxc/HLSL/DxilTypeSystem.h"
@@ -2604,7 +2605,7 @@ static bool isVectorOrStructArray(Type *T) {
   if (!T->isArrayTy())
     return false;
 
-  T = HLModule::GetArrayEltTy(T);
+  T = dxilutil::GetArrayEltTy(T);
 
   return T->isStructTy() || T->isVectorTy();
 }
@@ -3658,17 +3659,10 @@ void PointerStatus::analyzePointer(const Value *V, PointerStatus &PS,
       for (unsigned i = 0; i < argSize; i++) {
         Value *arg = CI->getArgOperand(i);
         if (V == arg) {
-          DxilParamInputQual inputQual =
-              annotation->GetParameterAnnotation(i).GetParamInputQual();
-          if (inputQual != DxilParamInputQual::In) {
-            PS.MarkAsStored();
-            if (inputQual == DxilParamInputQual::Inout)
-              PS.MarkAsLoaded();
-            break;
-          } else {
-            PS.MarkAsLoaded();
-            break;
-          }
+          // Do not replace struct arg.
+          // Mark stored and loaded to disable replace.
+          PS.MarkAsStored();
+          PS.MarkAsLoaded();
         }
       }
     }
@@ -3895,8 +3889,16 @@ public:
         if (F.user_empty())
           continue;
       }
+      // Skip void(void) functions.
+      if (F.getReturnType()->isVoidTy() && F.arg_size() == 0)
+        continue;
 
       WorkList.emplace_back(&F);
+    }
+
+    // Preprocess aggregate function param used as function call arg.
+    for (Function *F : WorkList) {
+      preprocessArgUsedInCall(F);
     }
 
     // Process the worklist
@@ -3921,8 +3923,8 @@ public:
     // Flatten internal global.
     std::vector<GlobalVariable *> staticGVs;
     for (GlobalVariable &GV : M.globals()) {
-      if (HLModule::IsStaticGlobal(&GV) ||
-          HLModule::IsSharedMemoryGlobal(&GV)) {
+      if (dxilutil::IsStaticGlobal(&GV) ||
+          dxilutil::IsSharedMemoryGlobal(&GV)) {
         staticGVs.emplace_back(&GV);
       } else {
         // merge GEP use for global.
@@ -3936,8 +3938,8 @@ public:
     // Remove unused internal global.
     staticGVs.clear();
     for (GlobalVariable &GV : M.globals()) {
-      if (HLModule::IsStaticGlobal(&GV) ||
-          HLModule::IsSharedMemoryGlobal(&GV)) {
+      if (dxilutil::IsStaticGlobal(&GV) ||
+          dxilutil::IsSharedMemoryGlobal(&GV)) {
         staticGVs.emplace_back(&GV);
       }
     }
@@ -3988,6 +3990,7 @@ public:
 
 private:
   void DeleteDeadInstructions();
+  void preprocessArgUsedInCall(Function *F);
   void moveFunctionBody(Function *F, Function *flatF);
   void replaceCall(Function *F, Function *flatF);
   void createFlattenedFunction(Function *F);
@@ -4795,8 +4798,8 @@ void SROA_Parameter_HLSL::replaceCastParameter(
       }
     }
 
-    Type *NewEltTy = HLModule::GetArrayEltTy(NewTy);
-    Type *OldEltTy = HLModule::GetArrayEltTy(OldTy);
+    Type *NewEltTy = dxilutil::GetArrayEltTy(NewTy);
+    Type *OldEltTy = dxilutil::GetArrayEltTy(OldTy);
 
     if (NewEltTy == HandlePtrTy) {
       // Save resource attribute.
@@ -4820,7 +4823,17 @@ Value *SROA_Parameter_HLSL::castArgumentIfRequired(
     // Create load here to make correct type.
     // The Ptr will be store with correct value in replaceCastParameter and
     // replaceCastArgument.
-    V = Builder.CreateLoad(Ptr);
+    if (Ptr->hasOneUse()) {
+      // Load after existing user for call arg replace.
+      // If not, call arg will load undef.
+      // This will not hurt parameter, new load is only after first load.
+      // It still before all the load users.
+      Instruction *User = cast<Instruction>(*(Ptr->user_begin()));
+      IRBuilder<> CallBuilder(User->getNextNode());
+      V = CallBuilder.CreateLoad(Ptr);
+    } else {
+      V = Builder.CreateLoad(Ptr);
+    }
     castParamMap[V] = std::make_pair(Ptr, inputQual);
   }
 
@@ -4868,11 +4881,16 @@ Value *SROA_Parameter_HLSL::castArgumentIfRequired(
           vectorEltsMap[V].emplace_back(Elt);
         }
       } else {
+        IRBuilder<> TmpBuilder(Builder.GetInsertPoint());
+        // Make sure extract element after OldV.
+        if (Instruction *OldI = dyn_cast<Instruction>(OldV)) {
+          TmpBuilder.SetInsertPoint(OldI->getNextNode());
+        }
         // Split into scalar.
-        V = Builder.CreateExtractElement(OldV, (uint64_t)0);
+        V = TmpBuilder.CreateExtractElement(OldV, (uint64_t)0);
         vectorEltsMap[V].emplace_back(V);
         for (unsigned i = 1; i < vecSize; i++) {
-          Value *Elt = Builder.CreateExtractElement(OldV, i);
+          Value *Elt = TmpBuilder.CreateExtractElement(OldV, i);
           vectorEltsMap[V].emplace_back(Elt);
         }
       }
@@ -5112,7 +5130,7 @@ void SROA_Parameter_HLSL::flattenArgument(
           EltAnnotation.SetSemanticString(semantic);
         } else if (!eltSem.empty() &&
                  semanticTypeMap.count(eltSem) == 0) {
-          Type *EltTy = HLModule::GetArrayEltTy(Ty);
+          Type *EltTy = dxilutil::GetArrayEltTy(Ty);
           DXASSERT(EltTy->isStructTy(), "must be a struct type to has semantic.");
           semanticTypeMap[eltSem] = EltTy->getStructElementType(i);
         }
@@ -5347,6 +5365,92 @@ void SROA_Parameter_HLSL::flattenArgument(
 
 }
 
+// For function parameter which used in function call and need to be flattened.
+// Replace with tmp alloca.
+void SROA_Parameter_HLSL::preprocessArgUsedInCall(Function *F) {
+  if (F->isDeclaration())
+    return;
+
+  const DataLayout &DL = m_pHLModule->GetModule()->getDataLayout();
+
+  DxilTypeSystem &typeSys = m_pHLModule->GetTypeSystem();
+  DxilFunctionAnnotation *pFuncAnnot = typeSys.GetFunctionAnnotation(F);
+  DXASSERT(pFuncAnnot, "else invalid function");
+
+  IRBuilder<> AllocaBuilder(F->getEntryBlock().getFirstInsertionPt());
+
+  SmallVector<ReturnInst*, 2> retList;
+  for (BasicBlock &bb : F->getBasicBlockList()) {
+    if (ReturnInst *RI = dyn_cast<ReturnInst>(bb.getTerminator())) {
+      retList.emplace_back(RI);
+    }
+  }
+
+  for (Argument &arg : F->args()) {
+    Type *Ty = arg.getType();
+    // Only check pointer types.
+    if (!Ty->isPointerTy())
+      continue;
+    Ty = Ty->getPointerElementType();
+    // Skip scalar types.
+    if (!Ty->isAggregateType() &&
+        Ty->getScalarType() == Ty)
+      continue;
+    bool bUsedInCall = false;
+    for (User *U : arg.users()) {
+      if (CallInst *CI = dyn_cast<CallInst>(U)) {
+        Function *CalledF = CI->getCalledFunction();
+        HLOpcodeGroup group = GetHLOpcodeGroup(CalledF);
+        // Skip HL operations.
+        if (group != HLOpcodeGroup::NotHL ||
+            group == HLOpcodeGroup::HLExtIntrinsic) {
+          continue;
+        }
+        // Skip llvm intrinsic.
+        if (CalledF->isIntrinsic())
+          continue;
+
+        bUsedInCall = true;
+        break;
+      }
+    }
+
+    if (bUsedInCall) {
+      // Create tmp.
+      Value *TmpArg = AllocaBuilder.CreateAlloca(Ty);
+      // Replace arg with tmp.
+      arg.replaceAllUsesWith(TmpArg);
+
+      DxilParameterAnnotation &paramAnnot = pFuncAnnot->GetParameterAnnotation(arg.getArgNo());
+      DxilParamInputQual inputQual = paramAnnot.GetParamInputQual();
+      unsigned size = DL.getTypeAllocSize(Ty);
+      // Copy between arg and tmp.
+      if (inputQual == DxilParamInputQual::In ||
+          inputQual == DxilParamInputQual::Inout) {
+        // copy arg to tmp.
+        CallInst *argToTmp = AllocaBuilder.CreateMemCpy(TmpArg, &arg, size, 0);
+        // Split the memcpy.
+        MemcpySplitter::SplitMemCpy(cast<MemCpyInst>(argToTmp), DL, nullptr,
+                                    typeSys);
+      }
+      if (inputQual == DxilParamInputQual::Out ||
+          inputQual == DxilParamInputQual::Inout) {
+        for (ReturnInst *RI : retList) {
+          IRBuilder<> Builder(RI);
+          // copy tmp to arg.
+          CallInst *tmpToArg =
+              AllocaBuilder.CreateMemCpy(&arg, TmpArg, size, 0);
+          // Split the memcpy.
+          MemcpySplitter::SplitMemCpy(cast<MemCpyInst>(tmpToArg), DL, nullptr,
+                                      typeSys);
+        }
+      }
+      // TODO: support other DxilParamInputQual.
+
+    }
+  }
+}
+
 /// moveFunctionBlocks - Move body of F to flatF.
 void SROA_Parameter_HLSL::moveFunctionBody(Function *F, Function *flatF) {
   bool updateRetType = F->getReturnType() != flatF->getReturnType();
@@ -5578,11 +5682,17 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
   std::unique_ptr<BasicBlock> TmpBlockForFuncDecl;
   if (F->isDeclaration()) {
     TmpBlockForFuncDecl.reset(BasicBlock::Create(Ctx));
+    // Create return as terminator.
+    IRBuilder<> RetBuilder(TmpBlockForFuncDecl.get());
+    RetBuilder.CreateRetVoid();
   }
 
   std::vector<Value *> FlatParamList;
   std::vector<DxilParameterAnnotation> FlatParamAnnotationList;
+  std::vector<int> FlatParamOriArgNoList;
+
   const bool bForParamTrue = true;
+
   // Add all argument to worklist.
   for (Argument &Arg : F->args()) {
     // merge GEP use for arg.
@@ -5592,14 +5702,21 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
     if (!F->isDeclaration()) {
       Builder.SetInsertPoint(F->getEntryBlock().getFirstInsertionPt());
     } else {
-      Builder.SetInsertPoint(TmpBlockForFuncDecl.get());
+      Builder.SetInsertPoint(TmpBlockForFuncDecl->getFirstInsertionPt());
     }
+
+    unsigned prevFlatParamCount = FlatParamList.size();
 
     DxilParameterAnnotation &paramAnnotation =
         funcAnnotation->GetParameterAnnotation(Arg.getArgNo());
     DbgDeclareInst *DDI = llvm::FindAllocaDbgDeclare(&Arg);
     flattenArgument(F, &Arg, bForParamTrue, paramAnnotation, FlatParamList,
                     FlatParamAnnotationList, Builder, DDI);
+
+    unsigned newFlatParamCount = FlatParamList.size() - prevFlatParamCount;
+    for (unsigned i = 0; i < newFlatParamCount; i++) {
+      FlatParamOriArgNoList.emplace_back(Arg.getArgNo());
+    }
   }
 
   Type *retType = F->getReturnType();
@@ -5611,7 +5728,7 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
     if (!F->isDeclaration()) {
       Builder.SetInsertPoint(F->getEntryBlock().getFirstInsertionPt());
     } else {
-      Builder.SetInsertPoint(TmpBlockForFuncDecl.get());
+      Builder.SetInsertPoint(TmpBlockForFuncDecl->getFirstInsertionPt());
     }
     Value *retValAddr = Builder.CreateAlloca(retType);
     DxilParameterAnnotation &retAnnotation =
@@ -5667,6 +5784,11 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
     flattenArgument(F, retValAddr, bForParamTrue,
                     funcAnnotation->GetRetTypeAnnotation(), FlatRetList,
                     FlatRetAnnotationList, Builder, DDI);
+
+    const int kRetArgNo = -1;
+    for (unsigned i = 0; i < FlatRetList.size(); i++) {
+      FlatParamOriArgNoList.emplace_back(kRetArgNo);
+    }
   }
 
   // Always change return type as parameter.
@@ -5684,8 +5806,6 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
                                    FlatRetAnnotationList.begin(),
                                    FlatRetAnnotationList.end());
   }
-
-  // TODO: take care AttributeSet for function and each argument.
 
   std::vector<Type *> FinalTypeList;
   for (Value * arg : FlatParamList) {
@@ -5723,8 +5843,10 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
         }
       }
     }
-    // Support store to input and load from output.
-    LegalizeDxilInputOutputs(F, funcAnnotation, typeSys);
+    if (!F->isDeclaration()) {
+      // Support store to input and load from output.
+      LegalizeDxilInputOutputs(F, funcAnnotation, typeSys);
+    }
     return;
   }
 
@@ -5747,8 +5869,29 @@ void SROA_Parameter_HLSL::createFlattenedFunction(Function *F) {
   // Param Info
   for (unsigned ArgNo = 0; ArgNo < FlatParamAnnotationList.size(); ++ArgNo) {
     DxilParameterAnnotation &paramAnnotation = flatFuncAnnotation->GetParameterAnnotation(ArgNo);
-    paramAnnotation = FlatParamAnnotationList[ArgNo];    
+    paramAnnotation = FlatParamAnnotationList[ArgNo];
   }
+
+  // Function Attr and Parameter Attr.
+  AttributeSet AS = F->getAttributes();
+  AttrBuilder FnAttrs(AS.getFnAttributes(), AttributeSet::FunctionIndex);
+  AttributeSet flatAS;
+  flatAS = flatAS.addAttributes(
+      Ctx, AttributeSet::FunctionIndex,
+      AttributeSet::get(Ctx, AttributeSet::FunctionIndex, FnAttrs));
+  if (!F->isDeclaration()) {
+    // Only set Param attribute for function has a body.
+    for (unsigned ArgNo = 0; ArgNo < FlatParamAnnotationList.size(); ++ArgNo) {
+      unsigned oriArgNo = FlatParamOriArgNoList[ArgNo] + 1;
+      AttrBuilder paramAttr(AS, oriArgNo);
+      if (oriArgNo == AttributeSet::ReturnIndex)
+        paramAttr.addAttribute(Attribute::AttrKind::NoAlias);
+      flatAS = flatAS.addAttributes(
+          Ctx, ArgNo + 1, AttributeSet::get(Ctx, ArgNo + 1, paramAttr));
+    }
+  }
+  flatF->setAttributes(flatAS);
+
   DXASSERT(flatF->arg_size() == (extraParamSize + FlatParamAnnotationList.size()), "parameter count mismatch");
   // ShaderProps.
   if (m_pHLModule->HasDxilFunctionProps(F)) {
@@ -6076,7 +6219,7 @@ public:
     std::vector<GlobalVariable *> staticGVs;
     for (GlobalVariable &GV : M.globals()) {
       bool isStaticGlobal =
-          HLModule::IsStaticGlobal(&GV) &&
+          dxilutil::IsStaticGlobal(&GV) &&
           GV.getType()->getAddressSpace() == DXIL::kDefaultAddrSpace;
 
       if (isStaticGlobal &&
@@ -6246,7 +6389,7 @@ bool LowerTypePass::runOnModule(Module &M) {
   // Work on internal global.
   std::vector<GlobalVariable *> vecGVs;
   for (GlobalVariable &GV : M.globals()) {
-    if (HLModule::IsStaticGlobal(&GV) || HLModule::IsSharedMemoryGlobal(&GV)) {
+    if (dxilutil::IsStaticGlobal(&GV) || dxilutil::IsSharedMemoryGlobal(&GV)) {
       if (needToLower(&GV) && !GV.user_empty())
         vecGVs.emplace_back(&GV);
     }
@@ -6386,7 +6529,7 @@ bool DynamicIndexingVectorToArray::needToLower(Value *V) {
     // Array must be replaced even without dynamic indexing to remove vector
     // type in dxil.
     // TODO: optimize static array index in later pass.
-    Type *EltTy = HLModule::GetArrayEltTy(AT);
+    Type *EltTy = dxilutil::GetArrayEltTy(AT);
     return isa<VectorType>(EltTy);
   }
   return false;
@@ -6746,7 +6889,7 @@ void ResourceToHandle::initialize(Module &M) {
 
 bool ResourceToHandle::needToLower(Value *V) {
   Type *Ty = V->getType()->getPointerElementType();
-  Ty = HLModule::GetArrayEltTy(Ty);
+  Ty = dxilutil::GetArrayEltTy(Ty);
   return (HLModule::IsHLSLObjectType(Ty) && !HLModule::IsStreamOutputType(Ty));
 }
 

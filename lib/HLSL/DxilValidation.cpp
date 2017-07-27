@@ -16,7 +16,7 @@
 #include "dxc/HLSL/DxilShaderModel.h"
 #include "dxc/HLSL/DxilContainer.h"
 #include "dxc/Support/Global.h"
-#include "dxc/HLSL/HLModule.h"
+#include "dxc/HLSL/DxilUtil.h"
 #include "dxc/HLSL/DxilInstructions.h"
 #include "dxc/HLSL/ReducibilityAnalysis.h"
 #include "dxc/Support/WinIncludes.h"
@@ -316,6 +316,8 @@ void PrintDiagnosticContext::Handle(const DiagnosticInfo &DI) {
   case llvm::DiagnosticSeverity::DS_Warning:
     m_warningsFound = true;
     break;
+  default:
+    break;
   }
   m_Printer << "\n";
 }
@@ -500,7 +502,7 @@ struct ValidationContext {
       unsigned idx = 0;
       for (auto i = F->getBasicBlockList().begin(),
         e = F->getBasicBlockList().end(); i != e; ++i) {
-        if (BB == i) {
+        if (BB == &(*i)) {
           break;
         }
       }
@@ -1871,7 +1873,7 @@ static void ValidateDxilOperationCallInProfile(CallInst *CI,
 }
 
 static bool IsDxilFunction(llvm::Function *F) {
-  unsigned argSize = F->getArgumentList().size();
+  unsigned argSize = F->arg_size();
   if (argSize < 1) {
     // Cannot be a DXIL operation.
     return false;
@@ -2299,6 +2301,9 @@ static void ValidateInstructionMetadata(Instruction *I,
       ValidateTBAAMetadata(MD.second, ValCtx);
     } else if (MD.first == LLVMContext::MD_range) {
       // Validated in Verifier.cpp.
+    } else if (MD.first == LLVMContext::MD_noalias ||
+               MD.first == LLVMContext::MD_alias_scope) {
+      // noalias for DXIL validator >= 1.2
     } else {
       ValCtx.EmitMetaError(MD.second, ValidationRule::MetaUsed);
     }
@@ -2323,6 +2328,7 @@ static void ValidateFunctionBody(Function *F, ValidationContext &ValCtx) {
       llvm::Instruction &I = *i;
 
       if (I.hasMetadata()) {
+
         ValidateInstructionMetadata(&I, ValCtx);
       }
 
@@ -2589,11 +2595,7 @@ static void ValidateFunction(Function &F, ValidationContext &ValCtx) {
         argTy = argTy->getArrayElementType();
       }
 
-      DxilParameterAnnotation &paramAnnoation =
-          funcAnnotation->GetParameterAnnotation(arg.getArgNo());
-
-      if (argTy->isStructTy() && !HLModule::IsStreamOutputType(argTy) &&
-          !paramAnnoation.HasMatrixAnnotation()) {
+      if (argTy->isStructTy()) {
         if (arg.hasName())
           ValCtx.EmitFormatError(
               ValidationRule::DeclFnFlattenParam,
@@ -2617,7 +2619,7 @@ static void ValidateFunction(Function &F, ValidationContext &ValCtx) {
 static void ValidateGlobalVariable(GlobalVariable &GV,
                                    ValidationContext &ValCtx) {
   bool isInternalGV =
-      HLModule::IsStaticGlobal(&GV) || HLModule::IsSharedMemoryGlobal(&GV);
+      dxilutil::IsStaticGlobal(&GV) || dxilutil::IsSharedMemoryGlobal(&GV);
 
   if (!isInternalGV) {
     if (!GV.user_empty()) {
@@ -2642,7 +2644,7 @@ static void ValidateGlobalVariable(GlobalVariable &GV,
     }
 
     // Validate type for internal globals.
-    if (HLModule::IsStaticGlobal(&GV) || HLModule::IsSharedMemoryGlobal(&GV)) {
+    if (dxilutil::IsStaticGlobal(&GV) || dxilutil::IsSharedMemoryGlobal(&GV)) {
       Type *Ty = GV.getType()->getPointerElementType();
       ValidateType(Ty, ValCtx);
     }
@@ -2756,7 +2758,7 @@ static void ValidateDxilVersion(ValidationContext &ValCtx) {
           GetNodeOperandAsInt(ValCtx, pVerValues, 1, &minorVer)) {
         // This will need to be updated as dxil major/minor versions evolve,
         // depending on the degree of compat across versions.
-        if ((majorVer == 1 && minorVer < 2) &&
+        if ((majorVer == 1 && minorVer < 3) &&
             (majorVer == ValCtx.m_DxilMajor && minorVer == ValCtx.m_DxilMinor)) {
           return;
         }
@@ -2927,7 +2929,7 @@ CollectCBufferRanges(DxilStructAnnotation *annotation,
 
     unsigned offset = fieldAnnotation.GetCBufferOffset();
 
-    unsigned EltSize = HLModule::GetLegacyCBufferFieldElementSize(
+    unsigned EltSize = dxilutil::GetLegacyCBufferFieldElementSize(
         fieldAnnotation, EltTy, typeSys);
 
     bool bOutOfBound = false;
@@ -3159,6 +3161,8 @@ static void ValidateSignatureElement(DxilSignatureElement &SE,
     case DXIL::InterpolationMode::LinearNoperspectiveSample: {
       ValCtx.EmitFormatError(ValidationRule::MetaIntegerInterpMode, {SE.GetName()});
     } break;
+    default:
+      break;
     }
   }
 
@@ -3174,6 +3178,8 @@ static void ValidateSignatureElement(DxilSignatureElement &SE,
   case DXIL::SemanticInterpretationKind::NotPacked:
   case DXIL::SemanticInterpretationKind::Shadow:
     bShouldBeAllocated = false;
+    break;
+  default:
     break;
   }
 
@@ -3383,6 +3389,8 @@ static void ValidateSignatureOverlap(
   case DXIL::SemanticInterpretationKind::NotPacked:
   case DXIL::SemanticInterpretationKind::Shadow:
     return;
+  default:
+    break;
   }
 
   DxilPackElement PE(&E);
@@ -3622,6 +3630,8 @@ static void ValidateSignatures(ValidationContext &ValCtx) {
   case DXIL::ShaderKind::Domain:
       maxOutputScalars = DXIL::kMaxOutputTotalScalars;
       maxPatchConstantScalars = DXIL::kMaxHSOutputPatchConstantTotalScalars;
+    break;
+  default:
     break;
   }
 
@@ -3905,6 +3915,8 @@ static void ValidateShaderState(ValidationContext &ValCtx) {
       case DXIL::TessellatorOutputPrimitive::TriangleCCW:
         ValCtx.EmitError(ValidationRule::SmIsoLineOutputPrimitiveMismatch);
         break;
+      default:
+        break;
       }
       break;
     case DXIL::TessellatorDomain::Tri:
@@ -3912,12 +3924,16 @@ static void ValidateShaderState(ValidationContext &ValCtx) {
       case DXIL::TessellatorOutputPrimitive::Line:
         ValCtx.EmitError(ValidationRule::SmTriOutputPrimitiveMismatch);
         break;
+      default:
+        break;
       }
       break;
     case DXIL::TessellatorDomain::Quad:
       switch (tessOutputPrimitive) {
       case DXIL::TessellatorOutputPrimitive::Line:
         ValCtx.EmitError(ValidationRule::SmTriOutputPrimitiveMismatch);
+        break;
+      default:
         break;
       }
       break;
@@ -4101,8 +4117,10 @@ void GetValidationVersion(_Out_ unsigned *pMajor, _Out_ unsigned *pMinor) {
   // 1.0 is the first validator.
   // 1.1 adds:
   // - ILDN container part support
+  // 1.2 adds:
+  // - Metadata for floating point denorm mode
   *pMajor = 1;
-  *pMinor = 1;
+  *pMinor = 2;
 }
 
 _Use_decl_annotations_ HRESULT
@@ -4221,6 +4239,8 @@ static void VerifySignatureMatches(_In_ ValidationContext &ValCtx,
     break;
   case hlsl::DXIL::SignatureKind::PatchConstant:
     pName = "Program Patch Constant Signature";
+    break;
+  default:
     break;
   }
 
@@ -4466,8 +4486,9 @@ HRESULT ValidateLoadModule(const char *pIL,
   std::unique_ptr<llvm::MemoryBuffer> pBitcodeBuf;
   pBitcodeBuf.reset(llvm::MemoryBuffer::getMemBuffer(
       llvm::StringRef(pIL, ILLength), "", false).release());
-  ErrorOr<std::unique_ptr<llvm::Module>> loadedModuleResult(llvm::parseBitcodeFile(
-    pBitcodeBuf->getMemBufferRef(), Ctx));
+
+  ErrorOr<std::unique_ptr<Module>> loadedModuleResult =
+      llvm::parseBitcodeFile(pBitcodeBuf->getMemBufferRef(), Ctx);
 
   // DXIL disallows some LLVM bitcode constructs, like unaccounted-for sub-blocks.
   // These appear as warnings, which the validator should reject.

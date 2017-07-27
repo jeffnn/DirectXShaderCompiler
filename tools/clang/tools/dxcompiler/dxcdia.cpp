@@ -16,11 +16,15 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 
 #include "dxc/Support/WinIncludes.h"
 #include "dxc/HLSL/DxilContainer.h"
 #include "dxc/HLSL/DxilShaderModel.h"
 #include "dxc/HLSL/DxilModule.h"
+#include "dxc/Support/Global.h"
 #include "dia2.h"
 
 #include "dxc/dxcapi.internal.h"
@@ -34,6 +38,7 @@
 #include "dxc/Support/dxcapi.impl.h"
 #include <algorithm>
 #include <comdef.h>
+#include "dxcutil.h"
 
 using namespace llvm;
 using namespace clang;
@@ -132,6 +137,7 @@ static HRESULT StringRefToBSTR(llvm::StringRef value, BSTR *pRetVal) {
 
 static HRESULT CreateDxcDiaEnumTables(DxcDiaSession *, IDiaEnumTables **);
 static HRESULT CreateDxcDiaTable(DxcDiaSession *, DiaTableKind kind, IDiaTable **ppTable);
+static HRESULT DxcDiaFindLineNumbersByRVA(DxcDiaSession *, DWORD rva, DWORD length, IDiaEnumLineNumbers **);
 
 class DxcDiaSession : public IDiaSession {
 private:
@@ -146,6 +152,8 @@ private:
   llvm::NamedMDNode *m_arguments;
   std::vector<const Instruction *> m_instructions;
   std::vector<const Instruction *> m_instructionLines; // Instructions with line info.
+  typedef unsigned RVA;
+  std::unordered_map<const Instruction *, RVA> m_rvaMap; // Map instruction to its RVA.
 public:
   DXC_MICROCOM_TM_ADDREF_RELEASE_IMPL()
   DXC_MICROCOM_TM_CTOR(DxcDiaSession)
@@ -171,21 +179,27 @@ public:
     // Build up a linear list of instructions. The index will be used as the
     // RVA. Debug instructions are ommitted from this enumeration.
     for (const Function &fn : m_module->functions()) {
-      for (const BasicBlock &bb : fn.getBasicBlockList()) {
-        for (const Instruction &i : bb.getInstList()) {
-          if (i.getOpcode() == Instruction::Call) {
-            Value *pFn = i.getOperand(0);
-            if (pFn->getName().startswith("llvm.dbg.")) {
-              continue;
-            }
-          }
-
-          m_instructions.push_back(&i);
-          if (i.getDebugLoc()) {
-            m_instructionLines.push_back(&i);
+      for (const_inst_iterator it = inst_begin(fn), end = inst_end(fn); it != end; ++it) {
+        const Instruction &i = *it;
+        if (const CallInst *call = dyn_cast<const CallInst>(&i)) {
+          const Function *pFn = call->getCalledFunction();
+          if (pFn && pFn->getName().startswith("llvm.dbg.")) {
+            continue;
           }
         }
+
+        m_rvaMap.insert({ &i, static_cast<RVA>(m_instructions.size()) });
+        m_instructions.push_back(&i);
+        if (i.getDebugLoc()) {
+          m_instructionLines.push_back(&i);
+        }
       }
+    }
+
+    // Sanity check to make sure rva map is same as instruction index.
+    for (size_t i = 0, e = m_instructions.size(); i < e; ++i) {
+      DXASSERT(m_rvaMap.find(m_instructions[i]) != m_rvaMap.end(), "instruction not mapped to rva");
+      DXASSERT(m_rvaMap[m_instructions[i]] == i, "instruction mapped to wrong rva");
     }
   }
   llvm::NamedMDNode *Contents() { return m_contents; }
@@ -197,6 +211,7 @@ public:
   llvm::DebugInfoFinder &InfoRef() { return *m_finder.get(); }
   std::vector<const Instruction *> &InstructionsRef() { return m_instructions; }
   std::vector<const Instruction *> &InstructionLinesRef() { return m_instructionLines; }
+  std::unordered_map<const Instruction *, RVA> &RvaMapRef() { return m_rvaMap; }
 
   HRESULT getSourceFileIdByName(StringRef fileName, DWORD *pRetVal) {
     if (Contents() != nullptr) {
@@ -338,12 +353,18 @@ public:
     /* [in] */ DWORD seg,
     /* [in] */ DWORD offset,
     /* [in] */ DWORD length,
-    /* [out] */ IDiaEnumLineNumbers **ppResult) { return E_NOTIMPL; }
+    /* [out] */ IDiaEnumLineNumbers **ppResult) {
+      DxcThreadMalloc TM(m_pMalloc);
+      return DxcDiaFindLineNumbersByRVA(this, offset, length, ppResult);
+    }
 
   __override STDMETHODIMP findLinesByRVA(
     /* [in] */ DWORD rva,
     /* [in] */ DWORD length,
-    /* [out] */ IDiaEnumLineNumbers **ppResult) { return E_NOTIMPL; }
+    /* [out] */ IDiaEnumLineNumbers **ppResult) {
+    DxcThreadMalloc TM(m_pMalloc);
+    return DxcDiaFindLineNumbersByRVA(this, rva, length, ppResult);
+  }
 
   __override STDMETHODIMP findLinesByVA(
     /* [in] */ ULONGLONG va,
@@ -552,7 +573,25 @@ public:
 
   __override STDMETHODIMP Item(
     /* [in] */ VARIANT index,
-    /* [retval][out] */ IDiaTable **table) { return E_NOTIMPL; }
+    /* [retval][out] */ IDiaTable **table) {
+    // Avoid pulling in additional variant support (could have used VariantChangeType instead).
+    DWORD indexVal;
+    switch (index.vt) {
+    case VT_UI4:
+      indexVal = index.uintVal;
+      break;
+    case VT_I4:
+      IFR(IntToDWord(index.intVal, &indexVal));
+      break;
+    default:
+      return E_INVALIDARG;
+    }
+    if (indexVal > (unsigned)LastTableKind) {
+      return E_INVALIDARG;
+    }
+    DxcThreadMalloc TM(m_pMalloc);
+    return CreateDxcDiaTable(m_pSession, (DiaTableKind)indexVal, table);
+  }
 
   __override STDMETHODIMP Next(
     ULONG celt,
@@ -1690,18 +1729,19 @@ public:
 class DxcDiaLineNumber : public IDiaLineNumber {
   DXC_MICROCOM_TM_REF_FIELDS()
   CComPtr<DxcDiaSession> m_pSession;
-  DWORD m_index;
+  const Instruction *m_inst;
 public:
   DXC_MICROCOM_TM_ADDREF_RELEASE_IMPL()
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) {
     return DoBasicQueryInterface<IDiaLineNumber>(this, iid, ppvObject);
   }
 
-  DxcDiaLineNumber(IMalloc *pMalloc, DxcDiaSession *pSession, DWORD index)
-    : m_pMalloc(pMalloc), m_pSession(pSession), m_index(index) {}
+  DxcDiaLineNumber(IMalloc *pMalloc, DxcDiaSession *pSession, const Instruction * inst)
+    : m_pMalloc(pMalloc), m_pSession(pSession), m_inst(inst) {}
 
   const llvm::DebugLoc &DL() {
-    return m_pSession->InstructionLinesRef()[m_index]->getDebugLoc();
+    DXASSERT(bool(m_inst->getDebugLoc()), "Trying to read line info from invalid debug location");
+    return m_inst->getDebugLoc();
   }
 
   __override STDMETHODIMP get_compiland(
@@ -1742,7 +1782,7 @@ public:
 
   __override STDMETHODIMP get_relativeVirtualAddress(
     /* [retval][out] */ DWORD *pRetVal) { 
-    *pRetVal = m_index;
+    *pRetVal = m_pSession->RvaMapRef()[m_inst];
     return S_OK;
   }
 
@@ -1780,20 +1820,84 @@ public:
   }
 };
 
+// This class implements the line number table for dxc.
+//
+// It keeps a reference to the list of instructions that contain
+// line number debug info. By default, it points to the full list
+// of instructions that contain line info.
+//
+// It can also be passed a list of instructions that contain line info so
+// that we can iterate over a subset of lines. When passed an explicit list
+// it takes ownership of the list and points its reference to the internal
+// copy of the list.
 class DxcDiaTableLineNumbers : public DxcDiaTableBase<IDiaEnumLineNumbers, IDiaLineNumber> {
 public:
-  DxcDiaTableLineNumbers(IMalloc *pMalloc, DxcDiaSession *pSession) : DxcDiaTableBase(pMalloc, pSession, DiaTableKind::LineNumbers) {
-    m_count = pSession->InstructionLinesRef().size();
+  DxcDiaTableLineNumbers(IMalloc *pMalloc, DxcDiaSession *pSession) 
+    : DxcDiaTableBase(pMalloc, pSession, DiaTableKind::LineNumbers)
+    , m_instructions(pSession->InstructionLinesRef())
+  {
+    m_count = m_instructions.size();
   }
+  
+  DxcDiaTableLineNumbers(IMalloc *pMalloc, DxcDiaSession *pSession, std::vector<const Instruction*> &&instructions) 
+    : DxcDiaTableBase(pMalloc, pSession, DiaTableKind::LineNumbers)
+    , m_instructions(m_instructionsStorage)
+    , m_instructionsStorage(std::move(instructions))
+  {
+    m_count = m_instructions.size();
+  }
+  
 
   __override HRESULT GetItem(DWORD index, IDiaLineNumber **ppItem) {
-    *ppItem = CreateOnMalloc<DxcDiaLineNumber>(m_pMalloc, m_pSession, index);
+    if (index >= m_instructions.size())
+      return E_INVALIDARG;
+    *ppItem = CreateOnMalloc<DxcDiaLineNumber>(m_pMalloc, m_pSession, m_instructions[index]);
     if (*ppItem == nullptr)
       return E_OUTOFMEMORY;
     (*ppItem)->AddRef();
     return S_OK;
   }
+
+private:
+  // Keep a reference to the instructions that contain the line numbers.
+  const std::vector<const Instruction *> &m_instructions;
+  
+  // Provide storage space for instructions for when the table contains
+  // a subset of all instructions.
+  std::vector<const Instruction *> m_instructionsStorage;
 };
+
+static HRESULT DxcDiaFindLineNumbersByRVA(
+  DxcDiaSession *pSession,
+  DWORD rva,
+  DWORD length,
+  IDiaEnumLineNumbers **ppResult) 
+{
+  if (!ppResult)
+    return E_POINTER;
+
+  std::vector<const Instruction*> instructions;
+  const std::vector<const Instruction*> &allInstructions = pSession->InstructionsRef();
+
+  // Gather the list of insructions that map to the given rva range.
+  for (DWORD i = rva; i < rva + length; ++i) {
+    if (i >= allInstructions.size())
+      return E_INVALIDARG;
+
+    // Only include the instruction if it has debug info for line mappings.
+    const Instruction *inst = allInstructions[i];
+    if (inst->getDebugLoc())
+      instructions.push_back(inst);
+  }
+
+  // Create line number table from explicit instruction list.
+  IMalloc *pMalloc = pSession->GetMallocNoRef();
+  *ppResult = CreateOnMalloc<DxcDiaTableLineNumbers>(pMalloc, pSession, std::move(instructions));
+  if (*ppResult == nullptr)
+    return E_OUTOFMEMORY;
+  (*ppResult)->AddRef();
+  return S_OK;
+}
 
 class DxcDiaTableSections : public DxcDiaTableBase<IDiaEnumSectionContribs, IDiaSectionContrib> {
 public:
@@ -1965,7 +2069,7 @@ public:
 
   __override HRESULT STDMETHODCALLTYPE get_lastError(BSTR *pRetVal) {
     *pRetVal = nullptr;
-    return E_NOTIMPL;
+    return S_OK;
   }
 
   __override HRESULT STDMETHODCALLTYPE loadDataFromPdb(_In_ LPCOLESTR pdbPath) {
@@ -1996,15 +2100,49 @@ public:
     m_finder.reset();
     try {
       m_context = std::make_shared<LLVMContext>();
+      MemoryBuffer *pBitcodeBuffer;
+      std::unique_ptr<MemoryBuffer> pEmbeddedBuffer;
       std::unique_ptr<MemoryBuffer> pBuffer =
           getMemBufferFromStream(pIStream, "data");
-      ErrorOr<std::unique_ptr<llvm::Module>> module =
-          parseBitcodeFile(pBuffer->getMemBufferRef(), *m_context.get());
-      if (!module)
+      size_t bufferSize = pBuffer->getBufferSize();
+
+      // The buffer can hold LLVM bitcode for a module, or the ILDB
+      // part from a container.
+      if (bufferSize < sizeof(UINT32)) {
+        return DXC_E_MALFORMED_CONTAINER;
+      }
+      const UINT32 BC_C0DE = ((INT32)(INT8)'B' | (INT32)(INT8)'C' << 8 | (INT32)0xDEC0 << 16); // BC0xc0de in big endian
+      if (BC_C0DE == *(const UINT32*)pBuffer->getBufferStart()) {
+        pBitcodeBuffer = pBuffer.get();
+      }
+      else {
+        if (bufferSize <= sizeof(hlsl::DxilProgramHeader)) {
+          return DXC_E_MALFORMED_CONTAINER;
+        }
+
+        hlsl::DxilProgramHeader *pDxilProgramHeader = (hlsl::DxilProgramHeader *)pBuffer->getBufferStart();
+        if (pDxilProgramHeader->BitcodeHeader.DxilMagic != DxilMagicValue) {
+          return DXC_E_MALFORMED_CONTAINER;
+        }
+
+        UINT32 BlobSize;
+        const char *pBitcode = nullptr;
+        hlsl::GetDxilProgramBitcode(pDxilProgramHeader, &pBitcode, &BlobSize);
+        UINT32 offset = (UINT32)(pBitcode - (const char *)pDxilProgramHeader);
+        std::unique_ptr<MemoryBuffer> p = MemoryBuffer::getMemBuffer(
+            StringRef(pBitcode, bufferSize - offset), "data");
+        pEmbeddedBuffer.swap(p);
+        pBitcodeBuffer = pEmbeddedBuffer.get();
+      }
+
+      std::string DiagStr;
+      std::unique_ptr<llvm::Module> pModule = dxcutil::LoadModuleFromBitcode(
+          pBitcodeBuffer, *m_context.get(), DiagStr);
+      if (!pModule.get())
         return E_FAIL;
       m_finder = std::make_shared<DebugInfoFinder>();
-      m_finder->processModule(*module.get().get());
-      m_module.reset(module.get().release());
+      m_finder->processModule(*pModule.get());
+      m_module.reset(pModule.release());
     }
     CATCH_CPP_RETURN_HRESULT();
     return S_OK;
