@@ -133,14 +133,16 @@ public:
   void applyOptions(PassOptions O) override;
 
 private:
+  void EnsureUAVHandleCreation(DxilModule &DM, LLVMContext & Ctx);
   void EmitAccess(LLVMContext & Ctx, OP *HlslOP, IRBuilder<> &, Value *slot, ShaderAccessFlags access);
-  bool EmitResourceAccess(DxilResourceAndClass &res, Instruction * instruction, OP * HlslOP, LLVMContext & Ctx, ShaderAccessFlags readWrite);
+  void EmitResourceAccess(DxilModule &DM, DxilResourceAndClass &res, Instruction * instruction, OP * HlslOP, LLVMContext & Ctx, ShaderAccessFlags readWrite);
 
 private:
   bool m_CheckForDynamicIndexing = false;
   std::map<RegisterTypeAndSpace, SlotRange> m_slotAssignments;
-  CallInst *m_HandleForUAV;
+  CallInst *m_HandleForUAV = nullptr;
   std::set<RSRegisterIdentifier> m_DynamicallyIndexedBindPoints;
+  bool m_modified = false;
 };
 
 static unsigned DeserializeInt(std::deque<char> & q) {
@@ -253,13 +255,17 @@ void DxilShaderAccessTracking::EmitAccess(LLVMContext & Ctx, OP *HlslOP, IRBuild
   }, "UAVOrResult");
 }
 
-bool DxilShaderAccessTracking::EmitResourceAccess(DxilResourceAndClass &res, Instruction * instruction, OP * HlslOP, LLVMContext & Ctx, ShaderAccessFlags readWrite) {
+void DxilShaderAccessTracking::EmitResourceAccess(DxilModule &DM, DxilResourceAndClass &res, Instruction * instruction, OP * HlslOP, LLVMContext & Ctx, ShaderAccessFlags readWrite) {
 
   RegisterTypeAndSpace typeAndSpace{ RegisterTypeFromResourceClass(res.resClass), res.resource->GetSpaceID() };
 
   auto slot = m_slotAssignments.find(typeAndSpace);
   // If the assignment isn't found, we assume it's not accessed
   if (slot != m_slotAssignments.end()) {
+
+    m_modified = true;
+
+    EnsureUAVHandleCreation(DM, Ctx);;
 
     IRBuilder<> Builder(instruction);
     Value * slotIndex;
@@ -294,10 +300,7 @@ bool DxilShaderAccessTracking::EmitResourceAccess(DxilResourceAndClass &res, Ins
     }
 
     EmitAccess(Ctx, HlslOP, Builder, slotIndex, readWrite);
-
-    return true; // did modify
   }
-  return false; // did not modify
 }
 
 
@@ -351,25 +354,26 @@ bool DxilShaderAccessTracking::runOnModule(Module &M)
   LLVMContext & Ctx = M.getContext();
   OP *HlslOP = DM.GetOP();
 
-  bool Modified = false;
+  m_modified = false;
 
   if (m_CheckForDynamicIndexing) {
 
     bool FoundDynamicIndexing = false;
 
-    auto CreateHandleFn = HlslOP->GetOpFunc(DXIL::OpCode::CreateHandle, Type::getVoidTy(Ctx));
-    auto CreateHandleUses = CreateHandleFn->uses();
-    for (auto FI = CreateHandleUses.begin(); FI != CreateHandleUses.end(); ) {
-      auto & FunctionUse = *FI++;
-      auto FunctionUser = FunctionUse.getUser();
-      auto instruction = cast<Instruction>(FunctionUser);
-      Value * index = instruction->getOperand(3);
-      if (!isa<Constant>(index)) {
-        FoundDynamicIndexing = true;
-        break;
+    auto * CreateHandleFn = HlslOP->TryGetOpFunc(DXIL::OpCode::CreateHandle, Type::getVoidTy(Ctx));
+    if (CreateHandleFn != nullptr) {
+      auto CreateHandleUses = CreateHandleFn->uses();
+      for (auto FI = CreateHandleUses.begin(); FI != CreateHandleUses.end(); ) {
+        auto & FunctionUse = *FI++;
+        auto FunctionUser = FunctionUse.getUser();
+        auto instruction = cast<Instruction>(FunctionUser);
+        Value * index = instruction->getOperand(3);
+        if (!isa<Constant>(index)) {
+          FoundDynamicIndexing = true;
+          break;
+        }
       }
     }
-
     if (FoundDynamicIndexing) {
       if (OSOverride != nullptr) {
         formatted_raw_ostream FOS(*OSOverride);
@@ -385,100 +389,54 @@ bool DxilShaderAccessTracking::runOnModule(Module &M)
           FOS << "ShouldAssumeDsvAccess";
         }
       }
-      IRBuilder<> Builder(DM.GetEntryFunction()->getEntryBlock().getFirstInsertionPt());
 
-      unsigned int UAVResourceHandle = static_cast<unsigned int>(DM.GetUAVs().size());
+      std::vector<CallInst*> callSitesToInstrument;
 
-      // Set up a UAV with structure of a single int
-      SmallVector<llvm::Type*, 1> Elements{ Type::getInt32Ty(Ctx) };
-      llvm::StructType *UAVStructTy = llvm::StructType::create(Elements, "class.RWStructuredBuffer");
-      std::unique_ptr<DxilResource> pUAV = llvm::make_unique<DxilResource>();
-      pUAV->SetGlobalName("PIX_CountUAVName");
-      pUAV->SetGlobalSymbol(UndefValue::get(UAVStructTy->getPointerTo()));
-      pUAV->SetID(UAVResourceHandle);
-      pUAV->SetSpaceID((unsigned int)-2); // This is the reserved-for-tools register space
-      pUAV->SetSampleCount(1);
-      pUAV->SetGloballyCoherent(false);
-      pUAV->SetHasCounter(false);
-      pUAV->SetCompType(CompType::getI32());
-      pUAV->SetLowerBound(0);
-      pUAV->SetRangeSize(1);
-      pUAV->SetKind(DXIL::ResourceKind::RawBuffer);
-
-      auto pAnnotation = DM.GetTypeSystem().GetStructAnnotation(UAVStructTy);
-      if (pAnnotation == nullptr) {
-
-          pAnnotation = DM.GetTypeSystem().AddStructAnnotation(UAVStructTy);
-          pAnnotation->GetFieldAnnotation(0).SetCBufferOffset(0);
-          pAnnotation->GetFieldAnnotation(0).SetCompType(hlsl::DXIL::ComponentType::I32);
-          pAnnotation->GetFieldAnnotation(0).SetFieldName("count");
+      for (auto &F : M.functions()) {
+        Function &function = F;
+        if (!function.isDeclaration() || function.isIntrinsic() || !OP::IsDxilOpFunc(&function))
+          continue;
+        auto FunctionUses = F.uses();
+        for (auto & FunctionUser : FunctionUses) {
+          //Value * val = FunctionUser;
+          CallInst * func = dyn_cast_or_null<CallInst>(FunctionUser.getUser());
+          //CallInst * func = dyn_cast_or_null<CallInst>(val);
+          if (func != nullptr) {
+            callSitesToInstrument.push_back(func);
+          }
+        }
       }
 
-      ID = DM.AddUAV(std::move(pUAV));
+      for (auto instruction : callSitesToInstrument) {
+        unsigned opcode = cast<ConstantInt>(instruction->getArgOperand(0))->getLimitedValue();
+        DXIL::OpCode dxilOpcode = (DXIL::OpCode)opcode;
+        ShaderAccessFlags access = ShaderAccessFlags::None;
+        bool functionUsesSamplerAtIndex2 = false;
+        switch (dxilOpcode) {
+        case DXIL::OpCode::CBufferLoadLegacy     : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::CBufferLoad           : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::Sample                : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::SampleBias            : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::SampleLevel           : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::SampleGrad            : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::SampleCmp             : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::SampleCmpLevelZero    : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::TextureLoad           : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::TextureStore          : access = ShaderAccessFlags::Write  ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::TextureGather         : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = true ; break;
+        case DXIL::OpCode::TextureGatherCmp      : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::BufferLoad            : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::RawBufferLoad         : access = ShaderAccessFlags::Read   ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::BufferStore           : access = ShaderAccessFlags::Write  ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::BufferUpdateCounter   : access = ShaderAccessFlags::Counter; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::AtomicBinOp           : access = ShaderAccessFlags::Write  ; functionUsesSamplerAtIndex2 = false; break;
+        case DXIL::OpCode::AtomicCompareExchange : access = ShaderAccessFlags::Write  ; functionUsesSamplerAtIndex2 = false; break;
+        default:
+          //do nothing: no access
+          break;
+        }
 
-      assert((unsigned)ID == UAVResourceHandle);
-
-      // Create handle for the newly-added UAV
-      Function* CreateHandleOpFunc = HlslOP->GetOpFunc(DXIL::OpCode::CreateHandle, Type::getVoidTy(Ctx));
-      Constant* CreateHandleOpcodeArg = HlslOP->GetU32Const((unsigned)DXIL::OpCode::CreateHandle);
-      Constant* UAVArg = HlslOP->GetI8Const(static_cast<std::underlying_type<DxilResourceBase::Class>::type>(DXIL::ResourceClass::UAV));
-      Constant* MetaDataArg = HlslOP->GetU32Const(ID); // position of the metadata record in the corresponding metadata list
-      Constant* IndexArg = HlslOP->GetU32Const(0); // 
-      Constant* FalseArg = HlslOP->GetI1Const(0); // non-uniform resource index: false
-      m_HandleForUAV = Builder.CreateCall(CreateHandleOpFunc,
-      { CreateHandleOpcodeArg, UAVArg, MetaDataArg, IndexArg, FalseArg }, "PIX_CountUAV_Handle");
-
-      DM.ReEmitDxilResources();
-    }
-
-    struct ResourceAccessFunction
-    {
-      DXIL::OpCode opcode;
-      ShaderAccessFlags readWrite;
-      bool functionUsesSamplerAtIndex2;
-      std::vector<Type*> overloads;
-    };
-
-    std::vector<Type*> voidType = { Type::getVoidTy(Ctx) };
-    std::vector<Type*> i32 = { Type::getInt32Ty(Ctx) };
-    std::vector<Type*> f16f32 = { Type::getHalfTy(Ctx), Type::getFloatTy(Ctx) };
-    std::vector<Type*> f32i32 = { Type::getFloatTy(Ctx), Type::getInt32Ty(Ctx) };
-    std::vector<Type*> f32i32f64 = { Type::getFloatTy(Ctx), Type::getInt32Ty(Ctx), Type::getDoubleTy(Ctx) };
-    std::vector<Type*> f16f32i16i32 = { Type::getHalfTy(Ctx), Type::getFloatTy(Ctx), Type::getInt16Ty(Ctx), Type::getInt32Ty(Ctx) };
-    std::vector<Type*> f16f32f64i16i32i64 = { Type::getHalfTy(Ctx), Type::getFloatTy(Ctx), Type::getDoubleTy(Ctx), Type::getInt16Ty(Ctx), Type::getInt32Ty(Ctx), Type::getInt64Ty(Ctx) };
-
-
-    // todo: should "GetDimensions" mean a resource access?
-    ResourceAccessFunction raFunctions[] = {
-      { DXIL::OpCode::CBufferLoadLegacy     , ShaderAccessFlags::Read   , false, f32i32f64 },
-      { DXIL::OpCode::CBufferLoad           , ShaderAccessFlags::Read   , false, f16f32f64i16i32i64 },
-      { DXIL::OpCode::Sample                , ShaderAccessFlags::Read   , true , f16f32 },
-      { DXIL::OpCode::SampleBias            , ShaderAccessFlags::Read   , true , f16f32 },
-      { DXIL::OpCode::SampleLevel           , ShaderAccessFlags::Read   , true , f16f32 },
-      { DXIL::OpCode::SampleGrad            , ShaderAccessFlags::Read   , true , f16f32 },
-      { DXIL::OpCode::SampleCmp             , ShaderAccessFlags::Read   , true , f16f32 },
-      { DXIL::OpCode::SampleCmpLevelZero    , ShaderAccessFlags::Read   , true , f16f32 },
-      { DXIL::OpCode::TextureLoad           , ShaderAccessFlags::Read   , false, f16f32i16i32 },
-      { DXIL::OpCode::TextureStore          , ShaderAccessFlags::Write  , false, f16f32i16i32 },
-      { DXIL::OpCode::TextureGather         , ShaderAccessFlags::Read   , true , f32i32 }, // todo: SM6: f16f32i16i32 },
-      { DXIL::OpCode::TextureGatherCmp      , ShaderAccessFlags::Read   , false, f32i32 }, // todo: SM6: f16f32i16i32 },
-      { DXIL::OpCode::BufferLoad            , ShaderAccessFlags::Read   , false, f32i32 },
-      { DXIL::OpCode::RawBufferLoad         , ShaderAccessFlags::Read   , false, f32i32 },
-      { DXIL::OpCode::BufferStore           , ShaderAccessFlags::Write  , false, f32i32 },
-      { DXIL::OpCode::BufferUpdateCounter   , ShaderAccessFlags::Counter, false, voidType },
-      { DXIL::OpCode::AtomicBinOp           , ShaderAccessFlags::Write  , false, i32 },
-      { DXIL::OpCode::AtomicCompareExchange , ShaderAccessFlags::Write  , false, i32 },
-    };
-
-    for (const auto & raFunction : raFunctions) {
-      for (const auto & Overload : raFunction.overloads) {
-        Function * TheFunction = HlslOP->GetOpFunc(raFunction.opcode, Overload);
-        auto TexLoadFunctionUses = TheFunction->uses();
-        for (auto FI = TexLoadFunctionUses.begin(); FI != TexLoadFunctionUses.end(); ) {
-          auto & FunctionUse = *FI++;
-          auto FunctionUser = FunctionUse.getUser();
-          auto instruction = cast<Instruction>(FunctionUser);
-
+        if (access != ShaderAccessFlags::None) {
           auto res = GetResourceFromHandle(instruction->getOperand(1), DM);
 
           // Don't instrument the accesses to the UAV that we just added
@@ -486,15 +444,11 @@ bool DxilShaderAccessTracking::runOnModule(Module &M)
             continue;
           }
 
-          if (EmitResourceAccess(res, instruction, HlslOP, Ctx, raFunction.readWrite)) {
-            Modified = true;
-          }
+          EmitResourceAccess(DM, res, instruction, HlslOP, Ctx, access);
 
-          if (raFunction.functionUsesSamplerAtIndex2) {
+          if (functionUsesSamplerAtIndex2) {
             auto sampler = GetResourceFromHandle(instruction->getOperand(2), DM);
-            if (EmitResourceAccess(sampler, instruction, HlslOP, Ctx, ShaderAccessFlags::Read)) {
-              Modified = true;
-            }
+            EmitResourceAccess(DM, sampler, instruction, HlslOP, Ctx, ShaderAccessFlags::Read);
           }
         }
       }
@@ -510,7 +464,62 @@ bool DxilShaderAccessTracking::runOnModule(Module &M)
     }
   }
 
-  return Modified;
+  if (m_modified) {
+    DM.CollectShaderFlagsForModule();
+    DM.ReEmitDxilResources();
+  }
+  return m_modified;
+}
+
+void DxilShaderAccessTracking::EnsureUAVHandleCreation(DxilModule &DM, LLVMContext & Ctx)
+{
+  if (m_HandleForUAV != nullptr)
+    return;
+
+  OP *HlslOP = DM.GetOP();
+
+  IRBuilder<> Builder(DM.GetEntryFunction()->getEntryBlock().getFirstInsertionPt());
+
+  unsigned int UAVResourceHandle = static_cast<unsigned int>(DM.GetUAVs().size());
+
+  // Set up a UAV with structure of a single int
+  SmallVector<llvm::Type*, 1> Elements{ Type::getInt32Ty(Ctx) };
+  llvm::StructType *UAVStructTy = llvm::StructType::create(Elements, "class.RWStructuredBuffer");
+  std::unique_ptr<DxilResource> pUAV = llvm::make_unique<DxilResource>();
+  pUAV->SetGlobalName("PIX_CountUAVName");
+  pUAV->SetGlobalSymbol(UndefValue::get(UAVStructTy->getPointerTo()));
+  pUAV->SetID(UAVResourceHandle);
+  pUAV->SetSpaceID((unsigned int)-2); // This is the reserved-for-tools register space
+  pUAV->SetSampleCount(1);
+  pUAV->SetGloballyCoherent(false);
+  pUAV->SetHasCounter(false);
+  pUAV->SetCompType(CompType::getI32());
+  pUAV->SetLowerBound(0);
+  pUAV->SetRangeSize(1);
+  pUAV->SetKind(DXIL::ResourceKind::RawBuffer);
+
+  auto pAnnotation = DM.GetTypeSystem().GetStructAnnotation(UAVStructTy);
+  if (pAnnotation == nullptr) {
+
+    pAnnotation = DM.GetTypeSystem().AddStructAnnotation(UAVStructTy);
+    pAnnotation->GetFieldAnnotation(0).SetCBufferOffset(0);
+    pAnnotation->GetFieldAnnotation(0).SetCompType(hlsl::DXIL::ComponentType::I32);
+    pAnnotation->GetFieldAnnotation(0).SetFieldName("count");
+  }
+
+  ID = DM.AddUAV(std::move(pUAV));
+
+  assert((unsigned)ID == UAVResourceHandle);
+
+  // Create handle for the newly-added UAV
+  Function* CreateHandleOpFunc = HlslOP->GetOpFunc(DXIL::OpCode::CreateHandle, Type::getVoidTy(Ctx));
+  Constant* CreateHandleOpcodeArg = HlslOP->GetU32Const((unsigned)DXIL::OpCode::CreateHandle);
+  Constant* UAVArg = HlslOP->GetI8Const(static_cast<std::underlying_type<DxilResourceBase::Class>::type>(DXIL::ResourceClass::UAV));
+  Constant* MetaDataArg = HlslOP->GetU32Const(ID); // position of the metadata record in the corresponding metadata list
+  Constant* IndexArg = HlslOP->GetU32Const(0); // 
+  Constant* FalseArg = HlslOP->GetI1Const(0); // non-uniform resource index: false
+  m_HandleForUAV = Builder.CreateCall(CreateHandleOpFunc,
+  { CreateHandleOpcodeArg, UAVArg, MetaDataArg, IndexArg, FalseArg }, "PIX_CountUAV_Handle");
 }
 
 char DxilShaderAccessTracking::ID = 0;

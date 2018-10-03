@@ -43,6 +43,7 @@ public:
   void RefreshCache();
 
   llvm::Function *GetOpFunc(OpCode OpCode, llvm::Type *pOverloadType);
+  llvm::Function *TryGetOpFunc(OpCode OpCode, llvm::Type *pOverloadType);
   const llvm::SmallDenseMap<llvm::Type *, llvm::Function *, 8> &GetOpFuncList(OpCode OpCode) const;
   void RemoveFunction(llvm::Function *F);
   llvm::Type *GetOverloadType(OpCode OpCode, llvm::Function *F);
