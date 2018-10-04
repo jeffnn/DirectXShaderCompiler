@@ -31,22 +31,25 @@ public:
 
 bool DxilRemoveDiscards::runOnModule(Module &M)
 {
+  bool Modified = false;
+
   // This pass removes all instances of the discard instruction within the shader.
   DxilModule &DM = M.GetOrCreateDxilModule();
 
   LLVMContext & Ctx = M.getContext();
   OP *HlslOP = DM.GetOP();
-  Function * DiscardFunction = HlslOP->GetOpFunc(DXIL::OpCode::Discard, Type::getVoidTy(Ctx));
-  auto DiscardFunctionUses = DiscardFunction->uses();
+  Function * DiscardFunction = HlslOP->TryGetOpFunc(DXIL::OpCode::Discard, Type::getVoidTy(Ctx));
+  if (DiscardFunction != nullptr) {
+    auto DiscardFunctionUses = DiscardFunction->uses();
 
-  bool Modified = false;
 
-  for (auto FI = DiscardFunctionUses.begin(); FI != DiscardFunctionUses.end(); ) {
-    auto & FunctionUse = *FI++;
-    auto FunctionUser = FunctionUse.getUser();
-    auto instruction = cast<Instruction>(FunctionUser);
-    instruction->eraseFromParent();
-    Modified = true;
+    for (auto FI = DiscardFunctionUses.begin(); FI != DiscardFunctionUses.end(); ) {
+      auto & FunctionUse = *FI++;
+      auto FunctionUser = FunctionUse.getUser();
+      auto instruction = cast<Instruction>(FunctionUser);
+      instruction->eraseFromParent();
+      Modified = true;
+    }
   }
 
   return Modified;

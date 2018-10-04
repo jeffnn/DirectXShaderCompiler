@@ -137,8 +137,6 @@ bool DxilAddPixelHitInstrumentation::runOnModule(Module &M)
     Constant* FalseArg = HlslOP->GetI1Const(0); // non-uniform resource index: false
     HandleForUAV = Builder.CreateCall(CreateHandleOpFunc,
     { CreateHandleOpcodeArg, UAVArg, MetaDataArg, IndexArg, FalseArg }, "PIX_CountUAV_Handle");
-
-    DM.ReEmitDxilResources();
   }
   // todo: is it a reasonable assumption that there will be a "Ret" in the entry block, and that these are the only
   // points from which the shader can exit (except for a pixel-kill?)
@@ -246,9 +244,10 @@ bool DxilAddPixelHitInstrumentation::runOnModule(Module &M)
     }
   }
 
-  bool Modified = false;
+  DM.CollectShaderFlagsForModule();
+  DM.ReEmitDxilResources();
 
-  return Modified;
+  return true;
 }
 
 char DxilAddPixelHitInstrumentation::ID = 0;

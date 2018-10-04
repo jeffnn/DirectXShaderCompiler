@@ -68,25 +68,27 @@ void DxilOutputColorBecomesConstant::visitOutputInstructionCallers(
   OP * HlslOP,
   std::function<void(CallInst*)> Visitor) {
 
-  auto OutputFunctionUses = OutputFunction->uses();
+  if (OutputFunction != nullptr) {
+    auto OutputFunctionUses = OutputFunction->uses();
 
-  for (Use &FunctionUse : OutputFunctionUses) {
-    iterator_range<Value::user_iterator> FunctionUsers = FunctionUse->users();
-    for (User * FunctionUser : FunctionUsers) {
-      if (isa<Instruction>(FunctionUser)) {
-        auto CallInstruction = cast<CallInst>(FunctionUser);
+    for (Use &FunctionUse : OutputFunctionUses) {
+      iterator_range<Value::user_iterator> FunctionUsers = FunctionUse->users();
+      for (User * FunctionUser : FunctionUsers) {
+        if (isa<Instruction>(FunctionUser)) {
+          auto CallInstruction = cast<CallInst>(FunctionUser);
 
-        // Check if the instruction writes to a render target (as opposed to a system-value, such as RenderTargetArrayIndex)
-        Value *OutputID = CallInstruction->getArgOperand(DXIL::OperandIndex::kStoreOutputIDOpIdx);
-        unsigned SignatureElementIndex = cast<ConstantInt>(OutputID)->getLimitedValue();
-        const DxilSignatureElement &SignatureElement = OutputSignature.GetElement(SignatureElementIndex);
+          // Check if the instruction writes to a render target (as opposed to a system-value, such as RenderTargetArrayIndex)
+          Value *OutputID = CallInstruction->getArgOperand(DXIL::OperandIndex::kStoreOutputIDOpIdx);
+          unsigned SignatureElementIndex = cast<ConstantInt>(OutputID)->getLimitedValue();
+          const DxilSignatureElement &SignatureElement = OutputSignature.GetElement(SignatureElementIndex);
 
-        // We only modify the output color for RTV0
-        if (SignatureElement.GetSemantic()->GetKind() == DXIL::SemanticKind::Target &&
+          // We only modify the output color for RTV0
+          if (SignatureElement.GetSemantic()->GetKind() == DXIL::SemanticKind::Target &&
             SignatureElement.GetSemanticStartIndex() == 0) {
 
-          // Replace the source operand with the appropriate constant value
-          Visitor(CallInstruction);
+            // Replace the source operand with the appropriate constant value
+            Visitor(CallInstruction);
+          }
         }
       }
     }
@@ -106,8 +108,8 @@ bool DxilOutputColorBecomesConstant::runOnModule(Module &M)
 
   const hlsl::DxilSignature & OutputSignature = DM.GetOutputSignature();
 
-  Function * FloatOutputFunction = HlslOP->GetOpFunc(DXIL::OpCode::StoreOutput, Type::getFloatTy(Ctx));
-  Function * IntOutputFunction = HlslOP->GetOpFunc(DXIL::OpCode::StoreOutput, Type::getInt32Ty(Ctx));
+  Function * FloatOutputFunction = HlslOP->TryGetOpFunc(DXIL::OpCode::StoreOutput, Type::getFloatTy(Ctx));
+  Function * IntOutputFunction = HlslOP->TryGetOpFunc(DXIL::OpCode::StoreOutput, Type::getInt32Ty(Ctx));
 
   bool hasFloatOutputs = false;
   bool hasIntOutputs = false;
