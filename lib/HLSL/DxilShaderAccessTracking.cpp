@@ -398,9 +398,7 @@ bool DxilShaderAccessTracking::runOnModule(Module &M)
           continue;
         auto FunctionUses = F.uses();
         for (auto & FunctionUser : FunctionUses) {
-          //Value * val = FunctionUser;
           CallInst * func = dyn_cast_or_null<CallInst>(FunctionUser.getUser());
-          //CallInst * func = dyn_cast_or_null<CallInst>(val);
           if (func != nullptr) {
             callSitesToInstrument.push_back(func);
           }

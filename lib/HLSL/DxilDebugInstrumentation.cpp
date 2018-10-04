@@ -287,7 +287,7 @@ DxilDebugInstrumentation::SystemValueIndices DxilDebugInstrumentation::addRequir
 
       if (Existing_SV_VertexId == InputElements.end()) {
         auto Added_SV_VertexId = llvm::make_unique<DxilSignatureElement>(DXIL::SigPointKind::VSIn);
-        Added_SV_VertexId->Initialize("VertexId", hlsl::CompType::getF32(), hlsl::DXIL::InterpolationMode::Undefined, 1, 1);
+        Added_SV_VertexId->Initialize("VertexId", hlsl::CompType::getU32(), hlsl::DXIL::InterpolationMode::Undefined, 1, 1);
         Added_SV_VertexId->AppendSemanticIndex(0);
         Added_SV_VertexId->SetSigPointKind(DXIL::SigPointKind::VSIn);
         Added_SV_VertexId->SetKind(hlsl::DXIL::SemanticKind::VertexID);
@@ -307,7 +307,7 @@ DxilDebugInstrumentation::SystemValueIndices DxilDebugInstrumentation::addRequir
 
       if (Existing_SV_InstanceId == InputElements.end()) {
         auto Added_SV_InstanceId = llvm::make_unique<DxilSignatureElement>(DXIL::SigPointKind::VSIn);
-        Added_SV_InstanceId->Initialize("InstanceId", hlsl::CompType::getF32(), hlsl::DXIL::InterpolationMode::Undefined, 1, 1);
+        Added_SV_InstanceId->Initialize("InstanceId", hlsl::CompType::getU32(), hlsl::DXIL::InterpolationMode::Undefined, 1, 1);
         Added_SV_InstanceId->AppendSemanticIndex(0);
         Added_SV_InstanceId->SetSigPointKind(DXIL::SigPointKind::VSIn);
         Added_SV_InstanceId->SetKind(hlsl::DXIL::SemanticKind::InstanceID);
@@ -319,6 +319,7 @@ DxilDebugInstrumentation::SystemValueIndices DxilDebugInstrumentation::addRequir
         SVIndices.VertexShader.InstanceId = Existing_SV_InstanceId->get()->GetID();
       }
     }
+    InputSignature.PackElements(DXIL::PackingStrategy::Optimized);
   }
   break;
   case DXIL::ShaderKind::Geometry: 
@@ -757,6 +758,7 @@ bool DxilDebugInstrumentation::runOnModule(Module &M) {
     }
   }
 
+  DM.CollectShaderFlagsForModule();
   DM.ReEmitDxilResources();
 
   return true;
