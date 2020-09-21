@@ -347,6 +347,17 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
     llvm::Module& M,
     llvm::DbgValueInst* DbgValue)
 {
+  llvm::Value *V = DbgValue->getValue();
+  if (V == nullptr) {
+    // The metadata contained a null Value, so we ignore it. This
+    // seems to be a dxcompiler bug.
+    return;
+  }
+
+  if (auto *PtrTy = llvm::dyn_cast<llvm::PointerType>(V->getType())) {
+    return;
+  }
+  
   llvm::IRBuilder<> B(M.getContext());
   auto* Zero = B.getInt32(0);
 
@@ -355,14 +366,6 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
   if (Register == nullptr)
   {
     Register.reset(new VariableRegisters(Variable, &M));
-  }
-
-  llvm::Value *V = DbgValue->getValue();
-  if (V == nullptr)
-  {
-    // The metadata contained a null Value, so we ignore it. This
-    // seems to be a dxcompiler bug.
-    return;
   }
 
   // Convert the offset from DbgValue's expression to a packed

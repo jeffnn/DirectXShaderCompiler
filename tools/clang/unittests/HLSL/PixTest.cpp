@@ -609,7 +609,8 @@ public:
   
   CComPtr<IDxcOperationResult> Compile(
     const char* hlsl,
-    const wchar_t* target)
+    const wchar_t* target,
+    std::vector<const wchar_t *> extraArgs)
   {
     CComPtr<IDxcCompiler> pCompiler;
     CComPtr<IDxcOperationResult> pResult;
@@ -617,9 +618,10 @@ public:
 
     VERIFY_SUCCEEDED(CreateCompiler(&pCompiler));
     CreateBlobFromText(hlsl, &pSource);
-    LPCWSTR args[] = { L"/Zi", L"/Od", L"-enable-16bit-types", L"/Qembed_debug" };
+    std::vector<const wchar_t*>  args = { L"/Zi", L"/Od", L"-enable-16bit-types", L"/Qembed_debug" };
+    args.insert(args.end(), extraArgs.begin(), extraArgs.end());
     VERIFY_SUCCEEDED(pCompiler->Compile(pSource, L"source.hlsl", L"main",
-      target, args, _countof(args), nullptr, 0, nullptr, &pResult));
+      target, args.data(), static_cast<UINT32>(args.size()), nullptr, 0, nullptr, &pResult));
 
     HRESULT compilationStatus;
     VERIFY_SUCCEEDED(pResult->GetStatus(&compilationStatus));
@@ -971,7 +973,7 @@ public:
     std::vector<AllocaWrite> AllocaWrites;
   };
 
-  TestableResults TestStructAnnotationCase(const char* hlsl);
+  TestableResults TestStructAnnotationCase(const char* hlsl, const wchar_t* optimizationLevel, bool validateCoverage = true);
   void ValidateAllocaWrite(std::vector<AllocaWrite> const& allocaWrites, size_t index, const char* name);
 
 };
@@ -1734,9 +1736,12 @@ TEST_F(PixTest, PixDebugCompileInfo) {
 // Declared here so we can test it.
 uint32_t CountStructMembers(llvm::Type const* pType);
 
-PixTest::TestableResults PixTest::TestStructAnnotationCase(const char* hlsl)
+PixTest::TestableResults PixTest::TestStructAnnotationCase(
+    const char* hlsl, 
+    const wchar_t * optimizationLevel,
+    bool validateCoverage)
 {
-  auto pOperationResult = Compile(hlsl, L"as_6_5");
+    auto pOperationResult = Compile(hlsl, L"as_6_5", { optimizationLevel } );
   CComPtr<IDxcBlob> pBlob;
   CheckOperationSucceeded(pOperationResult, &pBlob);
 
@@ -1834,20 +1839,23 @@ PixTest::TestableResults PixTest::TestStructAnnotationCase(const char* hlsl)
 
   // The member iterator should find a solid run of bits that is exactly covered
   // by exactly one of the members found by the annotation pass:
-  for (auto const& cover : ret.OffsetAndSizes)
+  if (validateCoverage)
   {
-    bool found = false;
-    for (auto const& valueLocation : passOutput.valueLocations)
-    {
-      constexpr unsigned int eightBitsPerByte = 8;
-      if (valueLocation.base * eightBitsPerByte == cover.offset)
+      for (auto const& cover : ret.OffsetAndSizes)
       {
-        VERIFY_IS_FALSE(found);
-        found = true;
-        VERIFY_ARE_EQUAL(valueLocation.count, cover.countOfMembers);
+          bool found = false;
+          for (auto const& valueLocation : passOutput.valueLocations)
+          {
+              constexpr unsigned int eightBitsPerByte = 8;
+              if (valueLocation.base * eightBitsPerByte == cover.offset)
+              {
+                  VERIFY_IS_FALSE(found);
+                  found = true;
+                  VERIFY_ARE_EQUAL(valueLocation.count, cover.countOfMembers);
+              }
+          }
+          VERIFY_IS_TRUE(found);
       }
-    }
-    VERIFY_IS_TRUE(found);
   }
 
   // For every store operation to the struct alloca, check that the annotation pass correctly determined which alloca
@@ -1904,11 +1912,14 @@ void PixTest::ValidateAllocaWrite(std::vector<AllocaWrite> const &allocaWrites,
 #endif
 }
 
+std::vector<const wchar_t*> OptimizationChoices ({ L"-Od", L"-O1" });
 
 TEST_F(PixTest, PixStructAnnotation_Simple) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices)
+  {
+      const char* hlsl = R"(
 struct smallPayload
 {
     uint dummy;
@@ -1924,22 +1935,27 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);  
-  VERIFY_ARE_EQUAL(32, Testables.OffsetAndSizes[0].size);
+      if (!Testables.OffsetAndSizes.empty())
+      {
+          VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+          VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes[0].countOfMembers);
+          VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+          VERIFY_ARE_EQUAL(32, Testables.OffsetAndSizes[0].size);
+      }
 
-  VERIFY_ARE_EQUAL(1, Testables.AllocaWrites.size());
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "dummy");
+      VERIFY_ARE_EQUAL(1, Testables.AllocaWrites.size());
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, "dummy");
+  }
 }
 
 
 TEST_F(PixTest, PixStructAnnotation_CopiedStruct) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
+  for (auto const* optimization : OptimizationChoices) {
 
-  const char *hlsl = R"(
+      const char* hlsl = R"(
 struct smallPayload
 {
     uint dummy;
@@ -1956,22 +1972,24 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);  
-  VERIFY_ARE_EQUAL(32, Testables.OffsetAndSizes[0].size);
+        VERIFY_IS_TRUE(Testables.OffsetAndSizes.size() >= 1);
+        VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes[0].countOfMembers);
+        VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+        VERIFY_ARE_EQUAL(32, Testables.OffsetAndSizes[0].size);
 
-  VERIFY_ARE_EQUAL(2, Testables.AllocaWrites.size());
-  // The values in the copy don't have stable names:
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "");
+      VERIFY_ARE_EQUAL(2, Testables.AllocaWrites.size());
+      // The values in the copy don't have stable names:
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, "");
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_MixedSizes) {
-  if (m_ver.SkipDxilVersion(1, 5)) return;
+    if (m_ver.SkipDxilVersion(1, 5)) return;
+    for (auto const* optimization : OptimizationChoices) {
 
-  const char *hlsl = R"(
+        const char* hlsl = R"(
 struct smallPayload
 {
     bool b1;
@@ -1993,26 +2011,31 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+        auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(4, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  // 8 bytes align for uint64_t:
-  VERIFY_ARE_EQUAL(32 + 16 + 16 /*alignment for next field*/ + 32 + 32/*alignment for max align*/ + 64,
-                   Testables.OffsetAndSizes[0].size);
+        if (!Testables.OffsetAndSizes.empty()) {
+            VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+            VERIFY_ARE_EQUAL(4, Testables.OffsetAndSizes[0].countOfMembers);
+            VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+            // 8 bytes align for uint64_t:
+            VERIFY_ARE_EQUAL(32 + 16 + 16 /*alignment for next field*/ + 32 + 32/*alignment for max align*/ + 64,
+                Testables.OffsetAndSizes[0].size);
+        }
 
-  VERIFY_ARE_EQUAL(4, Testables.AllocaWrites.size());
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "b1");
-  ValidateAllocaWrite(Testables.AllocaWrites, 1, "sixteen");
-  ValidateAllocaWrite(Testables.AllocaWrites, 2, "thirtytwo");
-  ValidateAllocaWrite(Testables.AllocaWrites, 3, "sixtyfour");
+        VERIFY_ARE_EQUAL(4, Testables.AllocaWrites.size());
+        ValidateAllocaWrite(Testables.AllocaWrites, 0, "b1");
+        ValidateAllocaWrite(Testables.AllocaWrites, 1, "sixteen");
+        ValidateAllocaWrite(Testables.AllocaWrites, 2, "thirtytwo");
+        ValidateAllocaWrite(Testables.AllocaWrites, 3, "sixtyfour");
+    }
 }
 
 TEST_F(PixTest, PixStructAnnotation_StructWithinStruct) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+
+      const char* hlsl = R"(
 
 struct Contained
 {
@@ -2040,23 +2063,28 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(4, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  VERIFY_ARE_EQUAL(4*32, Testables.OffsetAndSizes[0].size);
+      if (!Testables.OffsetAndSizes.empty()) {
+          VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+          VERIFY_ARE_EQUAL(4, Testables.OffsetAndSizes[0].countOfMembers);
+          VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+          VERIFY_ARE_EQUAL(4 * 32, Testables.OffsetAndSizes[0].size);
+      }
 
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "before");
-  ValidateAllocaWrite(Testables.AllocaWrites, 1, "one");
-  ValidateAllocaWrite(Testables.AllocaWrites, 2, "two");
-  ValidateAllocaWrite(Testables.AllocaWrites, 3, "after");
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, "before");
+      ValidateAllocaWrite(Testables.AllocaWrites, 1, "one");
+      ValidateAllocaWrite(Testables.AllocaWrites, 2, "two");
+      ValidateAllocaWrite(Testables.AllocaWrites, 3, "after");
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_1DArray) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-    const char* hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+
+      const char* hlsl = R"(
 struct smallPayload
 {
     uint32_t Array[2];
@@ -2073,17 +2101,22 @@ void main()
 }
 )";
 
-    auto Testables = TestStructAnnotationCase(hlsl);
-    VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-    VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-    VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-    VERIFY_ARE_EQUAL(2 * 32, Testables.OffsetAndSizes[0].size);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
+      if (!Testables.OffsetAndSizes.empty()) {
+          VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+          VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+          VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+          VERIFY_ARE_EQUAL(2 * 32, Testables.OffsetAndSizes[0].size);
+      }
+      VERIFY_ARE_EQUAL(2, Testables.AllocaWrites.size());
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_2DArray) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 struct smallPayload
 {
     uint32_t TwoDArray[2][3];
@@ -2104,17 +2137,22 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(6, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  VERIFY_ARE_EQUAL(2 * 3 * 32, Testables.OffsetAndSizes[0].size);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
+      if (!Testables.OffsetAndSizes.empty()) {
+          VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+          VERIFY_ARE_EQUAL(6, Testables.OffsetAndSizes[0].countOfMembers);
+          VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+          VERIFY_ARE_EQUAL(2 * 3 * 32, Testables.OffsetAndSizes[0].size);
+      }
+      VERIFY_ARE_EQUAL(6, Testables.AllocaWrites.size());
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_EmbeddedArray) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 
 struct Contained
 {
@@ -2142,24 +2180,28 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(5, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  VERIFY_ARE_EQUAL(5 * 32, Testables.OffsetAndSizes[0].size);
+      if (!Testables.OffsetAndSizes.empty()) {
+          VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+          VERIFY_ARE_EQUAL(5, Testables.OffsetAndSizes[0].countOfMembers);
+          VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+          VERIFY_ARE_EQUAL(5 * 32, Testables.OffsetAndSizes[0].size);
+      }
 
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "before");
-  ValidateAllocaWrite(Testables.AllocaWrites, 1, "array");
-  ValidateAllocaWrite(Testables.AllocaWrites, 2, "array");
-  ValidateAllocaWrite(Testables.AllocaWrites, 3, "array");
-  ValidateAllocaWrite(Testables.AllocaWrites, 4, "after");
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, "before");
+      ValidateAllocaWrite(Testables.AllocaWrites, 1, "array");
+      ValidateAllocaWrite(Testables.AllocaWrites, 2, "array");
+      ValidateAllocaWrite(Testables.AllocaWrites, 3, "array");
+      ValidateAllocaWrite(Testables.AllocaWrites, 4, "after");
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_FloatN) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 struct smallPayload
 {
     float2 f2;
@@ -2175,24 +2217,27 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  // Can't test this until dbg.declare instructions are emitted when structs contain pointers-to-pointers
-  // VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  // VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-  // VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  // VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
+      // Can't test this until dbg.declare instructions are emitted when structs contain pointers-to-pointers
+      // VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+      // VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+      // VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+      // VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
 
-  VERIFY_ARE_EQUAL(2, Testables.AllocaWrites.size());
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "member0"); // "memberN" until dbg.declare works
-  ValidateAllocaWrite(Testables.AllocaWrites, 1, "member1"); // "memberN" until dbg.declare works
+      bool IsOptimized = (wcscmp(optimization, L"-Od") != 0);
+      VERIFY_ARE_EQUAL(2, Testables.AllocaWrites.size());
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, (IsOptimized ? "" : "member0")); // "memberN" until dbg.declare works
+      ValidateAllocaWrite(Testables.AllocaWrites, 1, (IsOptimized ? "" : "member1")); // "memberN" until dbg.declare works
+  }
 }
 
 
 TEST_F(PixTest, PixStructAnnotation_SequentialFloatN) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 struct smallPayload
 {
     float3 color;
@@ -2211,27 +2256,30 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  // Can't test this until dbg.declare instructions are emitted when structs contain pointers-to-pointers
-  // VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  // VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-  // VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  // VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
+      // Can't test this until dbg.declare instructions are emitted when structs contain pointers-to-pointers
+      // VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+      // VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+      // VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+      // VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
 
-  VERIFY_ARE_EQUAL(6, Testables.AllocaWrites.size());
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, "member0"); // "memberN" until dbg.declare works
-  ValidateAllocaWrite(Testables.AllocaWrites, 1, "member1"); // "memberN" until dbg.declare works
-  ValidateAllocaWrite(Testables.AllocaWrites, 2, "member2"); // "memberN" until dbg.declare works
-  ValidateAllocaWrite(Testables.AllocaWrites, 3, "member0"); // "memberN" until dbg.declare works
-  ValidateAllocaWrite(Testables.AllocaWrites, 4, "member1"); // "memberN" until dbg.declare works
-  ValidateAllocaWrite(Testables.AllocaWrites, 5, "member2"); // "memberN" until dbg.declare works
+      VERIFY_ARE_EQUAL(6, Testables.AllocaWrites.size());
+      bool IsOptimized = (wcscmp(optimization, L"-Od") != 0);
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, (IsOptimized ? "" : "member0") ); // "memberN" until dbg.declare works
+      ValidateAllocaWrite(Testables.AllocaWrites, 1, (IsOptimized ? "" : "member1") ); // "memberN" until dbg.declare works
+      ValidateAllocaWrite(Testables.AllocaWrites, 2, (IsOptimized ? "" : "member2") ); // "memberN" until dbg.declare works
+      ValidateAllocaWrite(Testables.AllocaWrites, 3, (IsOptimized ? "" : "member0") ); // "memberN" until dbg.declare works
+      ValidateAllocaWrite(Testables.AllocaWrites, 4, (IsOptimized ? "" : "member1") ); // "memberN" until dbg.declare works
+      ValidateAllocaWrite(Testables.AllocaWrites, 5, (IsOptimized ? "" : "member2") ); // "memberN" until dbg.declare works
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_EmbeddedFloatN) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 
 struct Embedded
 {
@@ -2255,25 +2303,28 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-  // Can't test this until dbg.declare instructions are emitted when structs
-  // contain pointers-to-pointers
-  //VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  //VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-  //VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  //VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
+      // Can't test this until dbg.declare instructions are emitted when structs
+      // contain pointers-to-pointers
+      //VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+      //VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+      //VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+      //VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
 
-  VERIFY_ARE_EQUAL(3, Testables.AllocaWrites.size());
-  ValidateAllocaWrite(Testables.AllocaWrites, 0, ""); 
-  ValidateAllocaWrite(Testables.AllocaWrites, 1, "member0");
-  ValidateAllocaWrite(Testables.AllocaWrites, 2, "member1");
+      VERIFY_ARE_EQUAL(3, Testables.AllocaWrites.size());
+      bool IsOptimized = (wcscmp(optimization, L"-Od") != 0);
+      ValidateAllocaWrite(Testables.AllocaWrites, 0, "");
+      ValidateAllocaWrite(Testables.AllocaWrites, 1, (IsOptimized ? "" : "member0"));
+      ValidateAllocaWrite(Testables.AllocaWrites, 2, (IsOptimized ? "" : "member1"));
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_Matrix) {
   if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 struct smallPayload
 {
   float4x4 mat;
@@ -2289,19 +2340,23 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
-  // Can't test member iterator until dbg.declare instructions are emitted when structs
-  // contain pointers-to-pointers
-  VERIFY_ARE_EQUAL(16, Testables.AllocaWrites.size());
-  for (int i = 0; i < 16; ++i)
-  {
-    ValidateAllocaWrite(Testables.AllocaWrites, i, "");
+      auto Testables = TestStructAnnotationCase(hlsl, optimization);
+      // Can't test member iterator until dbg.declare instructions are emitted when structs
+      // contain pointers-to-pointers
+      VERIFY_ARE_EQUAL(16, Testables.AllocaWrites.size());
+      for (int i = 0; i < 16; ++i)
+      {
+          ValidateAllocaWrite(Testables.AllocaWrites, i, "");
+      }
   }
-
 }
 
 TEST_F(PixTest, PixStructAnnotation_MemberFunction) {
-  const char *hlsl = R"(
+  if (m_ver.SkipDxilVersion(1, 5))
+    return;
+
+  for (auto const* optimization : OptimizationChoices) {
+      const char* hlsl = R"(
 
 RWStructuredBuffer<float> floatRWUAV: register(u0);
 
@@ -2402,25 +2457,30 @@ void main()
 
 
 )";
+      // Probably related to PIX bug #29512388. Coverage validation awaiting that fix for optimized shaders
+      bool validateCoverage = (wcscmp(optimization, L"-Od") == 0);
 
-  auto Testables = TestStructAnnotationCase(hlsl);
-  // Can't test member iterator until dbg.declare instructions are emitted when structs
-  // contain pointers-to-pointers
-  
-  // Can't validate # of writes: rel and dbg are different
-  //VERIFY_ARE_EQUAL(43, Testables.AllocaWrites.size());
+      auto Testables = TestStructAnnotationCase(hlsl, optimization, validateCoverage);
+      // Can't test member iterator until dbg.declare instructions are emitted when structs
+      // contain pointers-to-pointers
 
-  // Can't test individual writes until struct member names are returned:
-  //for (int i = 0; i < 51; ++i)
-  //{
-  //  ValidateAllocaWrite(Testables.AllocaWrites, i, "");
-  //}
+      // Can't validate # of writes: rel and dbg are different
+      //VERIFY_ARE_EQUAL(43, Testables.AllocaWrites.size());
+
+      // Can't test individual writes until struct member names are returned:
+      //for (int i = 0; i < 51; ++i)
+      //{
+      //  ValidateAllocaWrite(Testables.AllocaWrites, i, "");
+      //}
+  }
 }
 
 TEST_F(PixTest, PixStructAnnotation_BigMess) {
-  if (m_ver.SkipDxilVersion(1, 5)) return;
+    if (m_ver.SkipDxilVersion(1, 5)) return;
 
-  const char *hlsl = R"(
+    for (auto const* optimization : OptimizationChoices) {
+
+        const char* hlsl = R"(
 
 struct BigStruct
 {
@@ -2477,13 +2537,17 @@ void main()
 }
 )";
 
-  auto Testables = TestStructAnnotationCase(hlsl);
-  VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-  VERIFY_ARE_EQUAL(15, Testables.OffsetAndSizes[0].countOfMembers);
-  VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-  constexpr uint32_t BigStructBitSize = 64 * 2;
-  constexpr uint32_t EmbeddedStructBitSize = 32 * 5;
-  VERIFY_ARE_EQUAL(3 * 32 + EmbeddedStructBitSize + 64 + 16 +16/*alignment for next field*/ + BigStructBitSize*2 + 32 + 32/*align to max align*/, Testables.OffsetAndSizes[0].size);
+        auto Testables = TestStructAnnotationCase(hlsl, optimization);
+        if (!Testables.OffsetAndSizes.empty()) {
+            VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+            VERIFY_ARE_EQUAL(15, Testables.OffsetAndSizes[0].countOfMembers);
+            VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+            constexpr uint32_t BigStructBitSize = 64 * 2;
+            constexpr uint32_t EmbeddedStructBitSize = 32 * 5;
+            VERIFY_ARE_EQUAL(3 * 32 + EmbeddedStructBitSize + 64 + 16 + 16/*alignment for next field*/ + BigStructBitSize * 2 + 32 + 32/*align to max align*/, Testables.OffsetAndSizes[0].size);
+        }
+        VERIFY_ARE_EQUAL(15, Testables.AllocaWrites.size());
+    }
 }
 
 
