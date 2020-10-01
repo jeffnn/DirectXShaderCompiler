@@ -206,6 +206,8 @@ public:
   TEST_METHOD(PixStructAnnotation_Matrix)
   TEST_METHOD(PixStructAnnotation_MemberFunction)
   TEST_METHOD(PixStructAnnotation_BigMess)
+  TEST_METHOD(PixStructAnnotation_AlignedFloat4Arrays)
+  TEST_METHOD(PixStructAnnotation_WheresMyDbgValue)
 
   dxc::DxcDllSupport m_dllSupport;
   VersionSupportInfo m_ver;
@@ -618,7 +620,7 @@ public:
 
     VERIFY_SUCCEEDED(CreateCompiler(&pCompiler));
     CreateBlobFromText(hlsl, &pSource);
-    std::vector<const wchar_t*>  args = { L"/Zi", L"/Od", L"-enable-16bit-types", L"/Qembed_debug" };
+    std::vector<const wchar_t*>  args = { L"/Zi", L"-enable-16bit-types", L"/Qembed_debug" };
     args.insert(args.end(), extraArgs.begin(), extraArgs.end());
     VERIFY_SUCCEEDED(pCompiler->Compile(pSource, L"source.hlsl", L"main",
       target, args.data(), static_cast<UINT32>(args.size()), nullptr, 0, nullptr, &pResult));
@@ -2546,6 +2548,70 @@ void main()
             constexpr uint32_t EmbeddedStructBitSize = 32 * 5;
             VERIFY_ARE_EQUAL(3 * 32 + EmbeddedStructBitSize + 64 + 16 + 16/*alignment for next field*/ + BigStructBitSize * 2 + 32 + 32/*align to max align*/, Testables.OffsetAndSizes[0].size);
         }
+        VERIFY_ARE_EQUAL(15, Testables.AllocaWrites.size());
+    }
+}
+
+TEST_F(PixTest, PixStructAnnotation_AlignedFloat4Arrays) {
+    if (m_ver.SkipDxilVersion(1, 5)) return;
+
+    for (auto const* optimization : OptimizationChoices) {
+
+        const char* hlsl = R"(
+
+struct smallPayload
+{
+    float4 linearTerms[3];
+    float4 hdrColorAO;
+    float4 visibilitySH;
+};
+
+
+[numthreads(1, 1, 1)]
+void main()
+{
+    smallPayload p;
+    p.linearTerms[0] = float4(1,2,3,4);
+    p.linearTerms[1] = float4(1,2,3,4);
+    p.linearTerms[2] = float4(1,2,3,4);
+    p.hdrColorAO = float4(1,2,3,4);
+    p.visibilitySH = float4(1,2,3,4);
+    DispatchMesh(1, 1, 1, p);
+}
+)";
+
+        auto Testables = TestStructAnnotationCase(hlsl, optimization);
+        // Can't test offsets and sizes until dbg.declare instructions are emitted when floatn is used (https://github.com/microsoft/DirectXShaderCompiler/issues/2920)
+        VERIFY_ARE_EQUAL(15, Testables.AllocaWrites.size());
+    }
+}
+
+TEST_F(PixTest, PixStructAnnotation_WheresMyDbgValue) {
+    if (m_ver.SkipDxilVersion(1, 5)) return;
+
+    for (auto const* optimization : OptimizationChoices) {
+
+        const char* hlsl = R"(
+
+struct smallPayload
+{
+    float f1;
+    //float2 f2;
+};
+
+
+[numthreads(1, 1, 1)]
+void main()
+{
+    smallPayload p;
+    p.f1 = 1;
+    //p.f2 = float2(2,3);
+    DispatchMesh(1, 1, 1, p);
+}
+)";
+
+        auto Testables = TestStructAnnotationCase(hlsl, optimization);
+        // Can't test offsets and sizes until dbg.declare instructions are emitted when floatn is used (https://github.com/microsoft/DirectXShaderCompiler/issues/2920)
         VERIFY_ARE_EQUAL(15, Testables.AllocaWrites.size());
     }
 }
