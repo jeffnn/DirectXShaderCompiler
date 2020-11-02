@@ -119,11 +119,11 @@ if /i "%1"=="-arm64" (
   set BUILD_ARCH=ARM64
   shift /1
 )
-if "%1"=="-Debug" (
+if /i "%1"=="-Debug" (
   set BUILD_CONFIG=Debug
   shift /1
 )
-if "%1"=="-Release" (
+if /i "%1"=="-Release" (
   set BUILD_CONFIG=Release
   shift /1
 )
@@ -177,22 +177,6 @@ if "%1"=="-dxc-cmake-ends-include" (
   set CMAKE_OPTS=%CMAKE_OPTS% -DDXC_CMAKE_ENDS_INCLUDE=%2
   shift /1
   shift /1
-)
-
-rem If only VS 2019 is available, pick that by default.
-if "%BUILD_VS_VER%"=="2017" (
-  if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2017" (
-    echo "Cannot find Visual Studio 2017 at %ProgramFiles(x86)%\Microsoft Visual Studio\2017."
-    echo "Use hctbuild without -vs2017 (or with -vs2019) to build with Visual Studio 2019."
-    exit /b 1
-  )
-)
-if "%BUILD_VS_VER%"=="2019" (
-  if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019" (
-    echo "Cannot find Visual Studio 2019 at %ProgramFiles(x86)%\Microsoft Visual Studio\2019."
-    echo "Use hctbuild -vs2017 to build with Visual Studio 2017."
-    exit /b 1
-  )
 )
 
 rem Begin SPIRV change

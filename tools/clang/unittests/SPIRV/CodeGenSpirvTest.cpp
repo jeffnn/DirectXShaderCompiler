@@ -921,6 +921,9 @@ TEST_F(FileTest, TextureArraySampleCmpLevelZero) {
 TEST_F(FileTest, TextureSampleInvalidImplicitLod) {
   runFileTest("texture.sample-invalid-implicit-lod.hlsl", Expect::Failure);
 }
+TEST_F(FileTest, TextureInvalidTex2D) {
+  runFileTest("texture.sample.invalid.tex2d.hlsl", Expect::Failure);
+}
 
 // For structured buffer methods
 TEST_F(FileTest, StructuredBufferLoad) {
@@ -981,6 +984,11 @@ TEST_F(FileTest, ByteAddressBufferGetDimensions) {
 }
 TEST_F(FileTest, RWByteAddressBufferAtomicMethods) {
   runFileTest("method.rw-byte-address-buffer.atomic.hlsl");
+}
+
+TEST_F(FileTest, InitializeListRWByteAddressBuffer) {
+  runFileTest("initializelist.rwbyteaddressbuffer.hlsl", Expect::Success,
+              /* runValidation */ false);
 }
 
 // For Buffer/RWBuffer methods
@@ -1559,6 +1567,9 @@ TEST_F(FileTest, SpirvLegalizationTextureBuffer) {
 TEST_F(FileTest, SpirvDebugOpSource) {
   runFileTest("spirv.debug.opsource.hlsl");
 }
+TEST_F(FileTest, SpirvDebugOpSourceNonExistingFile) {
+  runFileTest("spirv.debug.source.non.existing.file.hlsl");
+}
 
 TEST_F(FileTest, SpirvDebugOpLine) { runFileTest("spirv.debug.opline.hlsl"); }
 TEST_F(FileTest, SpirvDebugOpLineBranch) {
@@ -1624,10 +1635,6 @@ TEST_F(FileTest, SpirvDebugO3Option) {
 TEST_F(FileTest, SpirvDebugControlFile) {
   useVulkan1p1();
   runFileTest("spirv.debug.ctrl.file.hlsl");
-}
-TEST_F(FileTest, SpirvDebugControlSource) {
-  useVulkan1p1();
-  runFileTest("spirv.debug.ctrl.source.hlsl");
 }
 TEST_F(FileTest, SpirvDebugControlLine) {
   useVulkan1p1();
@@ -2405,6 +2412,112 @@ TEST_F(FileTest, CompatibilityWithVk1p1) {
   runFileTest("sm6.wave-read-lane-at.vulkan1.2.hlsl");
   runFileTest("sm6.wave-read-lane-first.vulkan1.2.hlsl");
   runFileTest("sm6.wave.builtin.no-dup.vulkan1.2.hlsl");
+}
+
+// Tests for Rich Debug Information
+
+TEST_F(FileTest, RichDebugInfoDebugSource) {
+  runFileTest("rich.debug.debugsource.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoDebugCompilationUnit) {
+  runFileTest("rich.debug.debugcompilationunit.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoDebugLexicalBlock) {
+  runFileTest("rich.debug.debuglexicalblock.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeBool) {
+  runFileTest("rich.debug.type.bool.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeInt) {
+  runFileTest("rich.debug.type.int.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeFloat) {
+  runFileTest("rich.debug.type.float.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeVector) {
+  runFileTest("rich.debug.type.vector.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeMatrix) {
+  runFileTest("rich.debug.type.matrix.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeArray) {
+  runFileTest("rich.debug.type.array.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeArrayFromSameType) {
+  runFileTest("rich.debug.type.array-from-same-type.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeFunction) {
+  runFileTest("rich.debug.type.function.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeMemberFunction) {
+  runFileTest("rich.debug.type.member.function.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeCompositeBeforeFunction) {
+  runFileTest("rich.debug.type.composite.before.function.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoMemberFunctionParam) {
+  runFileTest("rich.debug.member.function.param.hlsl");
+}
+TEST_F(FileTest, DISABLED_RichDebugInfoMemberFunctionWithoutCall) {
+  runFileTest("rich.debug.member.function.without-call.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeComposite) {
+  runFileTest("rich.debug.type.composite.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeCompositeEmpty) {
+  runFileTest("rich.debug.type.composite.empty.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoLocalVariable) {
+  runFileTest("rich.debug.local-variable.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoGlobalVariable) {
+  runFileTest("rich.debug.global-variable.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoFunction) {
+  runFileTest("rich.debug.function.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoFunctionParent) {
+  runFileTest("rich.debug.function.parent.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoFunctionParam) {
+  runFileTest("rich.debug.function.param.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoDebugSourceMultiple) {
+  runFileTest("rich.debug.debugsource.multiple.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoDeclare) {
+  runFileTest("rich.debug.debugdeclare.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoDeclareWithoutInit) {
+  runFileTest("rich.debug.debugdeclare.without.init.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoScope) {
+  runFileTest("rich.debug.debugscope.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeTexture) {
+  runFileTest("rich.debug.texture.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeRWTexture) {
+  runFileTest("rich.debug.rwtexture.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeSampler) {
+  runFileTest("rich.debug.sampler.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoCbuffer) {
+  runFileTest("rich.debug.cbuffer.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoSortTypeTemplate) {
+  runFileTest("rich.debug.sort.type.template.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoSwitchDebugScope) {
+  runFileTest("rich.debug.switch.debugscope.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoScopeAfterCompoundStatement) {
+  runFileTest("rich.debug.scope.after.compound.statement.hlsl");
+}
+TEST_F(FileTest, RichDebugInfoTypeStructuredBuffer) {
+  runFileTest("rich.debug.structured-buffer.hlsl", Expect::Success,
+              /*runValidation*/ false);
 }
 
 } // namespace
