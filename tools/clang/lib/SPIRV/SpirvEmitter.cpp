@@ -578,6 +578,10 @@ void SpirvEmitter::HandleTranslationUnit(ASTContext &context) {
   if (!declIdMapper.decorateResourceBindings())
     return;
 
+  // Add Coherent docrations to resource variables.
+  if (!declIdMapper.decorateResourceCoherent())
+    return;
+
   // Output the constructed module.
   std::vector<uint32_t> m = spvBuilder.takeModule();
 
@@ -587,8 +591,7 @@ void SpirvEmitter::HandleTranslationUnit(ASTContext &context) {
     needsLegalization = needsLegalization ||
                         declIdMapper.requiresLegalization() ||
                         spirvOptions.flattenResourceArrays ||
-                        declIdMapper.requiresFlatteningCompositeResources() ||
-                        spirvOptions.debugInfoRich;
+                        declIdMapper.requiresFlatteningCompositeResources();
 
     // Run legalization passes
     if (needsLegalization) {
@@ -606,8 +609,7 @@ void SpirvEmitter::HandleTranslationUnit(ASTContext &context) {
     }
 
     // Run optimization passes
-    if (!spirvOptions.debugInfoRich &&
-        theCompilerInstance.getCodeGenOpts().OptimizationLevel > 0) {
+    if (theCompilerInstance.getCodeGenOpts().OptimizationLevel > 0) {
       std::string messages;
       if (!spirvToolsOptimize(&m, &messages)) {
         emitFatalError("failed to optimize SPIR-V: %0", {}) << messages;
@@ -647,7 +649,7 @@ void SpirvEmitter::doDecl(const Decl *decl) {
   }
 
   if (const auto *varDecl = dyn_cast<VarDecl>(decl)) {
-      doVarDecl(varDecl);
+    doVarDecl(varDecl);
   } else if (const auto *namespaceDecl = dyn_cast<NamespaceDecl>(decl)) {
     for (auto *subDecl : namespaceDecl->decls())
       // Note: We only emit functions as they are discovered through the call
@@ -1016,7 +1018,8 @@ void SpirvEmitter::doFunctionDecl(const FunctionDecl *decl) {
       declIdMapper.getTypeAndCreateCounterForPotentialAliasVar(decl);
 
   spvBuilder.beginFunction(retType, decl->getLocStart(), funcName,
-                           decl->hasAttr<HLSLPreciseAttr>(), func);
+                           decl->hasAttr<HLSLPreciseAttr>(),
+                           decl->hasAttr<NoInlineAttr>(), func);
 
   auto loc = decl->getLocStart();
   RichDebugInfo *info = nullptr;
@@ -1208,7 +1211,7 @@ bool SpirvEmitter::validateVKAttributes(const NamedDecl *decl) {
       isValidType = bufDecl->isCBuffer();
     else if ((bufDecl = dyn_cast<HLSLBufferDecl>(decl->getDeclContext())))
       isValidType = bufDecl->isCBuffer();
-    else if(isa<VarDecl>(decl))
+    else if (isa<VarDecl>(decl))
       isValidType = isConstantBuffer(dyn_cast<VarDecl>(decl)->getType());
 
     if (!isValidType) {
@@ -2677,7 +2680,7 @@ SpirvInstruction *SpirvEmitter::processFlatConversion(
   // `-MemberExpr
   //   `-ImplicitCastExpr 'const T' lvalue <FlatConversion>
   //     `-ArraySubscriptExpr 'ConstantBuffer<T>':'ConstantBuffer<T>' lvalue
-  if(isConstantTextureBuffer(initType)) {
+  if (isConstantTextureBuffer(initType)) {
     return initInstr;
   }
 
@@ -8029,8 +8032,8 @@ SpirvInstruction *SpirvEmitter::processWaveBroadcast(const CallExpr *callExpr) {
     // might incorrectly suggest so). The proper mapping to SPIR-V for
     // it is OpGroupNonUniformShuffle, *not* OpGroupNonUniformBroadcast.
     return spvBuilder.createGroupNonUniformBinaryOp(
-        spv::Op::OpGroupNonUniformShuffle, retType, spv::Scope::Subgroup,
-        value, doExpr(callExpr->getArg(1)), srcLoc);
+        spv::Op::OpGroupNonUniformShuffle, retType, spv::Scope::Subgroup, value,
+        doExpr(callExpr->getArg(1)), srcLoc);
   else
     return spvBuilder.createGroupNonUniformUnaryOp(
         srcLoc, spv::Op::OpGroupNonUniformBroadcastFirst, retType,
@@ -11985,10 +11988,15 @@ SpirvEmitter::doUnaryExprOrTypeTraitExpr(const UnaryExprOrTypeTraitExpr *expr) {
     return nullptr;
   }
 
+  if (auto *constExpr = tryToEvaluateAsConst(expr)) {
+    constExpr->setRValue();
+    return constExpr;
+  }
+
   AlignmentSizeCalculator alignmentCalc(astContext, spirvOptions);
   uint32_t size = 0, stride = 0;
   std::tie(std::ignore, size) = alignmentCalc.getAlignmentAndSize(
-      expr->getArgumentType(), SpirvLayoutRule::Void,
+      expr->getArgumentType(), SpirvLayoutRule::Scalar,
       /*isRowMajor*/ llvm::None, &stride);
   auto *sizeConst = spvBuilder.getConstantInt(astContext.UnsignedIntTy,
                                               llvm::APInt(32, size));

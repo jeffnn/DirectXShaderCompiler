@@ -55,9 +55,7 @@ TEST_F(FileTest, StructTypes) { runFileTest("type.struct.hlsl"); }
 TEST_F(FileTest, StructTypeUniqueness) {
   runFileTest("type.struct.uniqueness.hlsl");
 }
-TEST_F(FileTest, StringTypes) {
-  runFileTest("type.string.hlsl");
-}
+TEST_F(FileTest, StringTypes) { runFileTest("type.string.hlsl"); }
 TEST_F(FileTest, StringTypesUninitializedError) {
   runFileTest("type.string.uninitialized.hlsl", Expect::Failure);
 }
@@ -420,6 +418,9 @@ TEST_F(FileTest, OpTextureSampleAccess) {
   runFileTest("op.texture.sample-access.hlsl");
 }
 TEST_F(FileTest, OpSizeOf) { runFileTest("op.sizeof.hlsl"); }
+TEST_F(FileTest, OpSizeOfSameForInitAndReturn) {
+  runFileTest("op.sizeof.same.for.init.and.return.hlsl");
+}
 
 // For casting
 TEST_F(FileTest, CastNoOp) { runFileTest("cast.no-op.hlsl"); }
@@ -585,6 +586,8 @@ TEST_F(FileTest, FunctionInCTBuffer) {
   setBeforeHLSLLegalization();
   runFileTest("fn.ctbuffer.hlsl");
 }
+
+TEST_F(FileTest, FunctionNoInline) { runFileTest("fn.noinline.hlsl"); }
 
 // For OO features
 TEST_F(FileTest, StructMethodCall) {
@@ -1866,6 +1869,10 @@ TEST_F(FileTest, VulkanMultiplePushConstant) {
   runFileTest("vk.push-constant.multiple.hlsl", Expect::Failure);
 }
 
+TEST_F(FileTest, VulkanPushConstantOnConstantBuffer) {
+  runFileTest("vk.push-constant.constantbuffer.hlsl");
+}
+
 TEST_F(FileTest, VulkanSpecConstantInit) {
   runFileTest("vk.spec-constant.init.hlsl");
 }
@@ -2257,6 +2264,10 @@ TEST_F(FileTest, DecorationNoContractionStageVars) {
 // For UserTypeGOOGLE decorations
 TEST_F(FileTest, DecorationUserTypeGOOGLE) {
   runFileTest("decoration.user-type.hlsl");
+}
+
+TEST_F(FileTest, DecorationCoherent) {
+  runFileTest("decoration.coherent.hlsl");
 }
 
 // For pragmas

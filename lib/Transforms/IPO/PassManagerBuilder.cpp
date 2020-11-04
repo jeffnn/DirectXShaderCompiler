@@ -359,13 +359,16 @@ void PassManagerBuilder::populateModulePassManager(
 
     if (!HLSLHighLevel) {
       MPM.add(createDxilConvergentClearPass());
-      MPM.add(createMultiDimArrayToOneDimArrayPass());
       MPM.add(createDxilRemoveDeadBlocksPass());
+      MPM.add(createDxilNoOptSimplifyInstructionsPass());
+      MPM.add(createGlobalOptimizerPass());
+      MPM.add(createMultiDimArrayToOneDimArrayPass());
       MPM.add(createDeadCodeEliminationPass());
       MPM.add(createGlobalDCEPass());
       MPM.add(createDxilLowerCreateHandleForLibPass());
       MPM.add(createDxilTranslateRawBuffer());
       MPM.add(createDxilLegalizeSampleOffsetPass());
+      MPM.add(createDxilNoOptLegalizePass());
       MPM.add(createDxilFinalizePreservesPass());
       MPM.add(createDxilFinalizeModulePass());
       MPM.add(createComputeViewIdStatePass());
