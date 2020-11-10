@@ -2221,11 +2221,10 @@ void main()
 
       auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-      // Can't test this until dbg.declare instructions are emitted when structs contain pointers-to-pointers
-      // VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-      // VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-      // VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-      // VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
+      VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+      VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+      VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+      VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
 
       bool IsOptimized = (wcscmp(optimization, L"-Od") != 0);
       VERIFY_ARE_EQUAL(2, Testables.AllocaWrites.size());
@@ -2260,11 +2259,10 @@ void main()
 
       auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-      // Can't test this until dbg.declare instructions are emitted when structs contain pointers-to-pointers
-      // VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-      // VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-      // VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-      // VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
+      VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+      VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+      VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+      VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
 
       VERIFY_ARE_EQUAL(6, Testables.AllocaWrites.size());
       bool IsOptimized = (wcscmp(optimization, L"-Od") != 0);
@@ -2307,12 +2305,10 @@ void main()
 
       auto Testables = TestStructAnnotationCase(hlsl, optimization);
 
-      // Can't test this until dbg.declare instructions are emitted when structs
-      // contain pointers-to-pointers
-      //VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
-      //VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
-      //VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
-      //VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
+      VERIFY_ARE_EQUAL(1, Testables.OffsetAndSizes.size());
+      VERIFY_ARE_EQUAL(2, Testables.OffsetAndSizes[0].countOfMembers);
+      VERIFY_ARE_EQUAL(0, Testables.OffsetAndSizes[0].offset);
+      VERIFY_ARE_EQUAL(32 + 32, Testables.OffsetAndSizes[0].size);
 
       VERIFY_ARE_EQUAL(3, Testables.AllocaWrites.size());
       bool IsOptimized = (wcscmp(optimization, L"-Od") != 0);
@@ -2559,11 +2555,16 @@ TEST_F(PixTest, PixStructAnnotation_AlignedFloat4Arrays) {
 
         const char* hlsl = R"(
 
+struct LinearSHSampleData
+{
+	float4 linearTerms[3];
+	float4 hdrColorAO;
+	float4 visibilitySH;
+} g_lhSampleData;
+
 struct smallPayload
 {
-    float4 linearTerms[3];
-    float4 hdrColorAO;
-    float4 visibilitySH;
+    LinearSHSampleData lhSampleData;
 };
 
 
@@ -2571,18 +2572,14 @@ struct smallPayload
 void main()
 {
     smallPayload p;
-    p.linearTerms[0] = float4(1,2,3,4);
-    p.linearTerms[1] = float4(1,2,3,4);
-    p.linearTerms[2] = float4(1,2,3,4);
-    p.hdrColorAO = float4(1,2,3,4);
-    p.visibilitySH = float4(1,2,3,4);
+    p.lhSampleData.linearTerms[0].x = g_lhSampleData.linearTerms[0].x;
     DispatchMesh(1, 1, 1, p);
 }
 )";
 
         auto Testables = TestStructAnnotationCase(hlsl, optimization);
         // Can't test offsets and sizes until dbg.declare instructions are emitted when floatn is used (https://github.com/microsoft/DirectXShaderCompiler/issues/2920)
-        VERIFY_ARE_EQUAL(15, Testables.AllocaWrites.size());
+        //VERIFY_ARE_EQUAL(20, Testables.AllocaWrites.size());
     }
 }
 
@@ -2596,7 +2593,7 @@ TEST_F(PixTest, PixStructAnnotation_WheresMyDbgValue) {
 struct smallPayload
 {
     float f1;
-    //float2 f2;
+    float2 f2;
 };
 
 
@@ -2605,14 +2602,14 @@ void main()
 {
     smallPayload p;
     p.f1 = 1;
-    //p.f2 = float2(2,3);
+    p.f2 = float2(2,3);
     DispatchMesh(1, 1, 1, p);
 }
 )";
 
         auto Testables = TestStructAnnotationCase(hlsl, optimization);
         // Can't test offsets and sizes until dbg.declare instructions are emitted when floatn is used (https://github.com/microsoft/DirectXShaderCompiler/issues/2920)
-        VERIFY_ARE_EQUAL(15, Testables.AllocaWrites.size());
+        VERIFY_ARE_EQUAL(3, Testables.AllocaWrites.size());
     }
 }
 
