@@ -401,7 +401,7 @@ static Value *TranslatePtrIfUsedByLoweredFn(
   Type *NewTy = GetLoweredUDT(cast<StructType>(Ty), &TypeSys);
 
   // No work to do here, but prevent SROA.
-  if (Ty == NewTy && AddrSpace != DXIL::kTGSMAddrSpace)
+  if (NewTy == nullptr || Ty == NewTy && AddrSpace != DXIL::kTGSMAddrSpace)
     return Ptr;
 
   // If type changed, replace value, otherwise casting may still
