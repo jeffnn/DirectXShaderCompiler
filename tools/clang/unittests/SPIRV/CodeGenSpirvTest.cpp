@@ -294,6 +294,10 @@ TEST_F(FileTest, BinaryOpMixedTypeArithAssign) {
   // Test mixing float/int/uint/bool/etc.
   runFileTest("binary-op.arith-assign.mixed.type.hlsl");
 }
+TEST_F(FileTest, BinaryOpMulAssignTypeMismatch) {
+  useVulkan1p1();
+  runFileTest("binary-op.mul-assign.type-mismatch.hlsl");
+}
 
 // For bitwise binary operators
 TEST_F(FileTest, BinaryOpScalarBitwise) {
@@ -1610,6 +1614,9 @@ TEST_F(FileTest, SpirvDebugOpLineVariables) {
 TEST_F(FileTest, SpirvDebugOpLineInclude) {
   runFileTest("spirv.debug.opline.include.hlsl");
 }
+TEST_F(FileTest, SpirvDebugOpLineEndOfShader) {
+  runFileTest("spirv.debug.opline.end.of.shader.hlsl");
+}
 
 TEST_F(FileTest, SpirvDebugDxcCommitInfo) {
   useVulkan1p1();
@@ -1855,6 +1862,11 @@ TEST_F(FileTest, BindingStructureOfResourcesContainsBufferError) {
   runFileTest(
       "vk.binding.global-struct-of-resources.contains-buffer-error.hlsl",
       Expect::Failure);
+}
+TEST_F(FileTest, BindingStructureOfResourcesPassLegalization) {
+  runFileTest("vk.binding.global-struct-of-resources.pass-legalization.hlsl",
+              Expect::Success,
+              /*runValidation*/ true);
 }
 
 TEST_F(FileTest, VulkanPushConstant) { runFileTest("vk.push-constant.hlsl"); }

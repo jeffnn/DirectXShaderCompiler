@@ -2178,6 +2178,7 @@ SpirvInstruction *SpirvEmitter::processCall(const CallExpr *callExpr) {
     // the LValueToRValue implicit cast here.
     auto *arg = callExpr->getArg(i)->IgnoreParenLValueCasts();
     const auto *param = callee->getParamDecl(i);
+    const auto paramType = param->getType();
 
     // Get the evaluation info if this argument is referencing some variable
     // *as a whole*, in which case we can avoid creating the temporary variable
@@ -2199,8 +2200,8 @@ SpirvInstruction *SpirvEmitter::processCall(const CallExpr *callExpr) {
     // expects are point-to-pointer argument for resources, which will be
     // resolved by legalization.
     if ((argInfo || (argInst && !argInst->isRValue())) &&
-        canActAsOutParmVar(param) && !isResourceType(param) &&
-        paramTypeMatchesArgType(param->getType(), arg->getType())) {
+        canActAsOutParmVar(param) && !isResourceType(paramType) &&
+        paramTypeMatchesArgType(paramType, arg->getType())) {
       // Based on SPIR-V spec, function parameter must be always Function
       // scope. In addition, we must pass memory object declaration argument
       // to function. If we pass an argument that is not function scope
@@ -2246,16 +2247,14 @@ SpirvInstruction *SpirvEmitter::processCall(const CallExpr *callExpr) {
       // the function. And we will cast back the results once the function call
       // has returned.
       if (canActAsOutParmVar(param) &&
-          !paramTypeMatchesArgType(param->getType(), arg->getType())) {
-        auto paramType = param->getType();
+          !paramTypeMatchesArgType(paramType, arg->getType())) {
         if (const auto *refType = paramType->getAs<ReferenceType>())
-          paramType = refType->getPointeeType();
-        rhsVal =
-            castToType(rhsVal, arg->getType(), paramType, arg->getLocStart());
+          rhsVal = castToType(rhsVal, arg->getType(), refType->getPointeeType(),
+                              arg->getLocStart());
       }
 
       // Initialize the temporary variables using the contents of the arguments
-      storeValue(tempVar, rhsVal, param->getType(), arg->getLocStart());
+      storeValue(tempVar, rhsVal, paramType, arg->getLocStart());
     }
   }
 
@@ -2280,6 +2279,7 @@ SpirvInstruction *SpirvEmitter::processCall(const CallExpr *callExpr) {
   // Go through all parameters and write those marked as out/inout
   for (uint32_t i = 0; i < numParams; ++i) {
     const auto *param = callee->getParamDecl(i);
+    const auto paramType = param->getType();
     // If it calls a non-static member function, the object itself is argument
     // 0, and therefore all other argument positions are shifted by 1.
     const uint32_t index = i + isNonStaticMemberCall;
@@ -2288,21 +2288,19 @@ SpirvInstruction *SpirvEmitter::processCall(const CallExpr *callExpr) {
     // there is no reason to copy back the results after the function call into
     // the resource.
     if (isTempVar[index] && canActAsOutParmVar(param) &&
-        !isResourceType(param)) {
+        !isResourceType(paramType)) {
       const auto *arg = callExpr->getArg(i);
-      SpirvInstruction *value = spvBuilder.createLoad(
-          param->getType(), vars[index], arg->getLocStart());
+      SpirvInstruction *value =
+          spvBuilder.createLoad(paramType, vars[index], arg->getLocStart());
 
       // Now we want to assign 'value' to arg. But first, in rare cases when
       // using 'out' or 'inout' where the parameter and argument have a type
       // mismatch, we need to first cast 'value' to the type of 'arg' because
       // the AST will not include a cast node.
-      if (!paramTypeMatchesArgType(param->getType(), arg->getType())) {
-        auto paramType = param->getType();
+      if (!paramTypeMatchesArgType(paramType, arg->getType())) {
         if (const auto *refType = paramType->getAs<ReferenceType>())
-          paramType = refType->getPointeeType();
-        value =
-            castToType(value, paramType, arg->getType(), arg->getLocStart());
+          value = castToType(value, refType->getPointeeType(), arg->getType(),
+                             arg->getLocStart());
       }
 
       processAssignment(arg, value, false, args[index]);
@@ -5970,12 +5968,15 @@ SpirvEmitter::tryToGenFloatVectorScale(const BinaryOperator *expr) {
     if (const auto *cast = dyn_cast<ImplicitCastExpr>(rhs)) {
       if (cast->getCastKind() == CK_HLSLVectorSplat) {
         const QualType vecType = expr->getType();
-        if (isa<CompoundAssignOperator>(expr)) {
+        if (const auto *compoundAssignExpr =
+                dyn_cast<CompoundAssignOperator>(expr)) {
+          const auto computationType =
+              compoundAssignExpr->getComputationLHSType();
           SpirvInstruction *lhsPtr = nullptr;
-          auto *result =
-              processBinaryOp(lhs, cast->getSubExpr(), expr->getOpcode(),
-                              vecType, vecType, range, expr->getOperatorLoc(),
-                              &lhsPtr, spv::Op::OpVectorTimesScalar);
+          auto *result = processBinaryOp(lhs, cast->getSubExpr(),
+                                         expr->getOpcode(), computationType,
+                                         vecType, range, expr->getOperatorLoc(),
+                                         &lhsPtr, spv::Op::OpVectorTimesScalar);
           return processAssignment(lhs, result, true, lhsPtr);
         } else {
           return processBinaryOp(lhs, cast->getSubExpr(), expr->getOpcode(),
@@ -6038,11 +6039,14 @@ SpirvEmitter::tryToGenFloatMatrixScale(const BinaryOperator *expr) {
       if (cast->getCastKind() == CK_HLSLMatrixSplat) {
         const QualType matType = expr->getType();
         const spv::Op opcode = selectOpcode(lhsType);
-        if (isa<CompoundAssignOperator>(expr)) {
+        if (const auto *compoundAssignExpr =
+                dyn_cast<CompoundAssignOperator>(expr)) {
+          const auto computationType =
+              compoundAssignExpr->getComputationLHSType();
           SpirvInstruction *lhsPtr = nullptr;
           auto *result = processBinaryOp(
-              lhs, cast->getSubExpr(), expr->getOpcode(), matType, matType,
-              range, expr->getOperatorLoc(), &lhsPtr, opcode);
+              lhs, cast->getSubExpr(), expr->getOpcode(), computationType,
+              matType, range, expr->getOperatorLoc(), &lhsPtr, opcode);
           return processAssignment(lhs, result, true, lhsPtr);
         } else {
           return processBinaryOp(lhs, cast->getSubExpr(), expr->getOpcode(),
@@ -11150,11 +11154,10 @@ bool SpirvEmitter::emitEntryFunctionWrapper(const FunctionDecl *decl,
     }
   }
 
-  // For wrapper of entry point, it is better not to specify SourceLocation
-  // for return statement, because it is not the location of the actual
-  // return and emitting the location of the end of entry function makes
-  // us confused. It is better to emit debug line just before OpFunctionEnd.
-  spvBuilder.createReturn(/* SourceLocation */ {});
+  // To prevent spirv-opt from removing all debug info, we emit at least
+  // a single OpLine to specify the end of the shader. This SourceLocation
+  // will provide the information.
+  spvBuilder.createReturn(decl->getLocEnd());
   spvBuilder.endFunction();
 
   // For Hull shaders, there is no explicit call to the PCF in the HLSL source.
@@ -11938,15 +11941,6 @@ bool SpirvEmitter::spirvToolsOptimize(std::vector<uint32_t> *mod,
     // Add performance passes.
     optimizer.RegisterPerformancePasses();
 
-    // Add flattening of resources if needed.
-    if (spirvOptions.flattenResourceArrays ||
-        declIdMapper.requiresFlatteningCompositeResources()) {
-      optimizer.RegisterPass(spvtools::CreateDescriptorScalarReplacementPass());
-      // ADCE should be run after desc_sroa in order to remove potentially
-      // illegal types such as structures containing opaque types.
-      optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass());
-    }
-
     // Add compact ID pass.
     optimizer.RegisterPass(spvtools::CreateCompactIdsPass());
   } else {
@@ -11973,6 +11967,14 @@ bool SpirvEmitter::spirvToolsLegalize(std::vector<uint32_t> *mod,
   spvtools::OptimizerOptions options;
   options.set_run_validator(false);
   optimizer.RegisterLegalizationPasses();
+  // Add flattening of resources if needed.
+  if (spirvOptions.flattenResourceArrays ||
+      declIdMapper.requiresFlatteningCompositeResources()) {
+    optimizer.RegisterPass(spvtools::CreateDescriptorScalarReplacementPass());
+    // ADCE should be run after desc_sroa in order to remove potentially
+    // illegal types such as structures containing opaque types.
+    optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass());
+  }
   optimizer.RegisterPass(spvtools::CreateReplaceInvalidOpcodePass());
   optimizer.RegisterPass(spvtools::CreateCompactIdsPass());
 
