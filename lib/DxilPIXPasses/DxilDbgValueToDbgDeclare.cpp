@@ -29,6 +29,38 @@
 #define DEBUG_TYPE "dxil-dbg-value-to-dbg-declare"
 
 namespace {
+class Logger
+{
+    FILE* m_dbgOut = nullptr;
+    bool m_enabled = false;
+public:
+    void Log(int depth, char const* fmt, ...)
+    {
+        if (m_enabled)
+        {
+            if (m_dbgOut == nullptr)
+            {
+                fopen_s(&m_dbgOut, "d:\\temp\\dbg.txt", "w");
+            }
+            for (int i = 0; i < depth; ++i)
+            {
+                fprintf(m_dbgOut, " ");
+            }
+            va_list args;
+            va_start(args, fmt);
+            vfprintf(m_dbgOut, fmt, args);
+            va_end(args);
+            fflush(m_dbgOut);
+        }
+    }
+    void Enable()
+    {
+        m_enabled = true;
+    }
+};
+
+Logger g_logger;
+
 using OffsetInBits = unsigned;
 using SizeInBits = unsigned;
 
@@ -199,7 +231,6 @@ class VariableRegisters
 {
 public:
   VariableRegisters(
-      FILE*,
       llvm::DIVariable *Variable,
       llvm::Module *M
   );
@@ -237,7 +268,6 @@ private:
       OffsetInBits Offset
   ) const;
 
-  FILE* m_dbgOut;
   llvm::DIVariable* m_Variable = nullptr;
   llvm::IRBuilder<> m_B;
   llvm::Function *m_DbgDeclareFn = nullptr;
@@ -251,11 +281,6 @@ public:
     static char ID;
     DxilDbgValueToDbgDeclare() : llvm::ModulePass(ID)
     {
-        fopen_s(&m_dbgOut, "d:\\temp\\dbg.txt", "w");
-    }
-    ~DxilDbgValueToDbgDeclare()
-    {
-        fclose(m_dbgOut);
     }
   bool runOnModule(
       llvm::Module &M
@@ -268,7 +293,6 @@ private:
 
   std::unordered_map<llvm::DIVariable *, std::unique_ptr<VariableRegisters>> m_Registers;
 
-  FILE *m_dbgOut;
   //int indent = 0;
   //void DbgMessage(char const* format, ...)
   //{
@@ -385,7 +409,7 @@ bool DxilDbgValueToDbgDeclare::runOnModule(
     if (auto *DbgValue = llvm::dyn_cast<llvm::DbgValueInst>(User))
     {
       Changed = true;
-      fprintf(m_dbgOut, "Starting dbg.value %s\n", DbgValue->getName().str().c_str());
+      g_logger.Log(0, "Starting dbg.value %s\n", DbgValue->getName().str().c_str());
       handleDbgValue(M, DbgValue);
       DbgValue->eraseFromParent();
     }
@@ -410,10 +434,14 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
   }
   
   llvm::DIVariable *Variable = DbgValue->getVariable();
+  if (Variable->getName().str() == "global.reflection_map.0.0.3")
+  {
+      g_logger.Enable();
+  }
   auto &Register = m_Registers[DbgValue->getVariable()];
   if (Register == nullptr)
   {
-    Register.reset(new VariableRegisters(m_dbgOut, Variable, &M));
+    Register.reset(new VariableRegisters(Variable, &M));
   }
 
   // Convert the offset from DbgValue's expression to a packed
@@ -490,6 +518,8 @@ static llvm::DIType *DITypePeelTypeAlias(
     case llvm::dwarf::DW_TAG_reference_type:
     case llvm::dwarf::DW_TAG_const_type:
     case llvm::dwarf::DW_TAG_typedef:
+    case llvm::dwarf::DW_TAG_pointer_type:
+    case llvm::dwarf::DW_TAG_member:
       return DITypePeelTypeAlias(
           DerivedTy->getBaseType().resolve(EmptyMap));
     }
@@ -508,11 +538,9 @@ const char* Depth(int depth)
 }
 
 VariableRegisters::VariableRegisters(
-    FILE * out,
     llvm::DIVariable *Variable,
     llvm::Module *M
-) : m_dbgOut(out)
-, m_Variable(Variable)
+) : m_Variable(Variable)
   , m_B(M->GetOrCreateDxilModule().GetEntryFunction()->getEntryBlock().begin())
   , m_DbgDeclareFn(llvm::Intrinsic::getDeclaration(
       M, llvm::Intrinsic::dbg_declare))
@@ -520,9 +548,9 @@ VariableRegisters::VariableRegisters(
   const llvm::DITypeIdentifierMap EmptyMap;
   llvm::DIType* Ty = m_Variable->getType().resolve(EmptyMap);
 
-  fprintf(m_dbgOut, "VariableRegistgers for %s\n", Variable->getName().str().c_str());
-  if ("Texture2DSet" == Ty->getName().str())
-      __debugbreak();
+  g_logger.Log(0, "VariableRegistgers for %s\n", Variable->getName().str().c_str());
+  //if ("this" == Variable->getName().str())
+  //    __debugbreak();
   PopulateAllocaMap(0, Ty);
   assert(m_Offsets.GetCurrentPackedOffset() ==
          DITypePeelTypeAlias(Ty)->getSizeInBits());
@@ -533,7 +561,7 @@ void VariableRegisters::PopulateAllocaMap(int depth,
     llvm::DIType *Ty
 )
 {
-  fprintf(m_dbgOut, "%sPopulateAllocaMap for type %s\n", Depth(depth), Ty->getName().str().c_str());
+  g_logger.Log(depth, "%sPopulateAllocaMap for type %s\n", Depth(depth), Ty->getName().str().c_str());
   //if (Ty->getName().str() == "LinearSHSampleData")
   //{
   //    __debugbreak();
@@ -547,10 +575,13 @@ void VariableRegisters::PopulateAllocaMap(int depth,
       assert(!"Unhandled DIDerivedType");
       m_Offsets.AlignToAndAddUnhandledType(DerivedTy);
       return;
+    case llvm::dwarf::DW_TAG_arg_variable: // "this" pointer
+    case llvm::dwarf::DW_TAG_pointer_type: // "this" pointer
     case llvm::dwarf::DW_TAG_restrict_type:
     case llvm::dwarf::DW_TAG_reference_type:
     case llvm::dwarf::DW_TAG_const_type:
     case llvm::dwarf::DW_TAG_typedef:
+    case llvm::dwarf::DW_TAG_member:
       PopulateAllocaMap(depth+1,
           DerivedTy->getBaseType().resolve(EmptyMap));
       return;
@@ -649,19 +680,19 @@ void VariableRegisters::PopulateAllocaMap_BasicType(int depth,
   auto *Storage = GetMetadataAsValue(llvm::ValueAsMetadata::get(Alloca));
   auto *Variable = GetMetadataAsValue(m_Variable);
 
-  if (auto* SubProgram = llvm::dyn_cast<llvm::DISubprogram>(llvm::ValueAsMetadata::get(Alloca)))
-  {
-      __debugbreak();
-  }
-
-  if (auto *SubProgram = llvm::dyn_cast<llvm::DISubprogram>(m_Variable)) {
-    __debugbreak();
-  }
-
-  if (auto *SubProgram = llvm::dyn_cast<llvm::DISubprogram>(GetDIExpression(Ty, AlignedOffset))) {
-    __debugbreak();
-  }
-
+  //if (auto* SubProgram = llvm::dyn_cast<llvm::DISubprogram>(llvm::ValueAsMetadata::get(Alloca)))
+  //{
+  //    __debugbreak();
+  //}
+  //
+  //if (auto *SubProgram = llvm::dyn_cast<llvm::DISubprogram>(m_Variable)) {
+  //  __debugbreak();
+  //}
+  //
+  //if (auto *SubProgram = llvm::dyn_cast<llvm::DISubprogram>(GetDIExpression(Ty, AlignedOffset))) {
+  //  __debugbreak();
+  //}
+  //
 
   auto *Expression = GetMetadataAsValue(GetDIExpression(Ty, AlignedOffset));
   /*auto *DbgDeclare = */m_B.CreateCall(
@@ -700,7 +731,7 @@ void VariableRegisters::PopulateAllocaMap_ArrayType(int depth,
     llvm::DICompositeType* Ty
 )
 {
-  fprintf(m_dbgOut, "%sPopulateAllocaMap for ARRAY type %s\n", Depth(depth),
+  g_logger.Log(depth, "%sPopulateAllocaMap for ARRAY type %s\n", Depth(depth),
           Ty->getName().str().c_str());
   unsigned NumElements = NumArrayElements(Ty);
   if (NumElements == 0)
@@ -740,10 +771,10 @@ static bool SortMembers(
     std::map<OffsetInBits, llvm::DIType*> *SortedMembers
 )
 {
-    if (Ty->getName().str() == "Texture2D<vector<float, 4> >")
-    {
-        __debugbreak();
-    }
+    //if (Ty->getName().str() == "Texture2D<vector<float, 4> >")
+    //{
+    //    __debugbreak();
+    //}
     // How to test for empty element list?
     if (Ty->getElements().begin() == Ty->getElements().end()) {
         {
@@ -809,13 +840,13 @@ void VariableRegisters::PopulateAllocaMap_StructType(
     llvm::DICompositeType *Ty
 )
 {
-  fprintf(m_dbgOut, "%sPopulateAllocaMap for STRUCT type %s\n", Depth(depth),
+  g_logger.Log(depth, "%sPopulateAllocaMap for STRUCT type %s\n", Depth(depth),
           Ty->getName().str().c_str());
 
   std::map<OffsetInBits, llvm::DIType*> SortedMembers;
   if (!SortMembers(Ty, &SortedMembers))
   {
-      fprintf(m_dbgOut, "PopulateAllocaMap for STRUCT type failed to sort members\n");
+      g_logger.Log(depth, "PopulateAllocaMap for STRUCT type failed to sort members\n");
       m_Offsets.AlignToAndAddUnhandledType(Ty);
       return;
   }
@@ -827,19 +858,18 @@ void VariableRegisters::PopulateAllocaMap_StructType(
 
   for (auto OffsetAndMember : SortedMembers)
   {
-      fprintf(m_dbgOut,
+      g_logger.Log(depth, 
           "%sPopulateAllocaMap for STRUCT offset %d for %s\n",
           Depth(depth), OffsetAndMember.first, OffsetAndMember.second->getName().str().c_str());
       // Align the offsets to the member's type natural alignment. This
       // should always result in the current aligned offset being the
       // same as the member's offset.
-      fprintf(m_dbgOut, "%sAligned offset starts at %d\n",
+      g_logger.Log(depth, "%sAligned offset starts at %d\n",
           Depth(depth),
           m_Offsets.GetCurrentAlignedOffset());
       m_Offsets.AlignTo(OffsetAndMember.second);
-      fprintf(m_dbgOut, "%sAligned offset is now %d\n",
+      g_logger.Log(depth, "%sAligned offset is now %d\n",
           Depth(depth), m_Offsets.GetCurrentAlignedOffset());
-      fflush(m_dbgOut);
       assert(m_Offsets.GetCurrentAlignedOffset() ==
           StructStart + OffsetAndMember.first &&
           "Offset mismatch in DIStructType");

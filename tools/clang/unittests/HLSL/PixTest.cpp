@@ -207,6 +207,7 @@ public:
   TEST_METHOD(PixStructAnnotation_MemberFunction)
   TEST_METHOD(PixStructAnnotation_BigMess)
   TEST_METHOD(PixStructAnnotation_AlignedFloat4Arrays)
+  TEST_METHOD(PixStructAnnotation_ResourceAsMember)
   TEST_METHOD(PixStructAnnotation_WheresMyDbgValue)
 
   dxc::DxcDllSupport m_dllSupport;
@@ -2574,6 +2575,47 @@ void main()
     smallPayload p;
     p.lhSampleData.linearTerms[0].x = g_lhSampleData.linearTerms[0].x;
     DispatchMesh(1, 1, 1, p);
+}
+)";
+
+        auto Testables = TestStructAnnotationCase(hlsl, optimization);
+        // Can't test offsets and sizes until dbg.declare instructions are emitted when floatn is used (https://github.com/microsoft/DirectXShaderCompiler/issues/2920)
+        //VERIFY_ARE_EQUAL(20, Testables.AllocaWrites.size());
+    }
+}
+
+TEST_F(PixTest, PixStructAnnotation_ResourceAsMember) {
+    if (m_ver.SkipDxilVersion(1, 5)) return;
+
+    for (auto const* optimization : OptimizationChoices) {
+
+        const char* hlsl = R"(
+
+Buffer<float> g_texture;
+
+struct smallPayload
+{
+    float value;
+};
+
+struct WithEmbeddedObject
+{
+	Buffer<float> texture;
+};
+
+void DispatchIt(WithEmbeddedObject eo)
+{
+    smallPayload p;
+    p.value = eo.texture.Load(0);
+    DispatchMesh(1, 1, 1, p);
+}
+
+[numthreads(1, 1, 1)]
+void main()
+{
+    WithEmbeddedObject eo;
+    eo.texture = g_texture;
+    DispatchIt(eo);
 }
 )";
 
