@@ -434,9 +434,14 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
   }
   
   llvm::DIVariable *Variable = DbgValue->getVariable();
-  if (Variable->getName().str() == "global.reflection_map.0.0.3")
+  if (Variable->getName().str() == "lightIndex")//global.reflection_map.0.0.3")
   {
-      g_logger.Enable();
+      static int counter = 0;
+      counter++;
+      if (counter == 3)
+      {
+          g_logger.Enable();
+      }
   }
   auto &Register = m_Registers[DbgValue->getVariable()];
   if (Register == nullptr)
@@ -695,10 +700,10 @@ void VariableRegisters::PopulateAllocaMap_BasicType(int depth,
   //
 
   auto *Expression = GetMetadataAsValue(GetDIExpression(Ty, AlignedOffset));
-  /*auto *DbgDeclare = */m_B.CreateCall(
+  auto *DbgDeclare = m_B.CreateCall(
       m_DbgDeclareFn,
       {Storage, Variable, Expression});
-//  DbgDeclare->setDebugLoc(GetVariableLocation());
+  DbgDeclare->setDebugLoc(GetVariableLocation());
 }
 
 static unsigned NumArrayElements(
@@ -835,6 +840,33 @@ static bool SortMembers(
   return true;
 }
 
+static bool IsResourceObject(llvm::DIDerivedType* DT)
+{
+    const llvm::DITypeIdentifierMap EmptyMap;
+    auto* BT = DT->getBaseType().resolve(EmptyMap);
+    if (auto* CompositeTy = llvm::dyn_cast<llvm::DICompositeType>(BT))
+    {
+        auto id = CompositeTy->getIdentifier();
+        (void)id;
+        auto rawid = CompositeTy->getRawIdentifier();
+        (void)rawid;
+        // Resources (e.g. TextureCube) are composite types but have no elements:
+        if (CompositeTy->getElements().begin() == CompositeTy->getElements().end()) {
+            auto name = CompositeTy->getName();
+            auto openTemplateListMarker = name.find_first_of('<');
+            if (openTemplateListMarker != llvm::StringRef::npos)
+            {
+                auto hlslType = name.substr(0, openTemplateListMarker);
+                return hlslType == "TextureCube" 
+                    || hlslType == "Texture2D"
+                    || hlslType == "Texture1D"
+                    || hlslType == "Buffer";
+            }
+        }
+    }
+    return false;
+}
+
 void VariableRegisters::PopulateAllocaMap_StructType(
     int depth,
     llvm::DICompositeType *Ty
@@ -843,6 +875,10 @@ void VariableRegisters::PopulateAllocaMap_StructType(
   g_logger.Log(depth, "%sPopulateAllocaMap for STRUCT type %s\n", Depth(depth),
           Ty->getName().str().c_str());
 
+  //if (Ty->getName().str() == "Texture2DSet_Base")
+  //{
+  //    __debugbreak();
+  //}
   std::map<OffsetInBits, llvm::DIType*> SortedMembers;
   if (!SortMembers(Ty, &SortedMembers))
   {
@@ -873,21 +909,17 @@ void VariableRegisters::PopulateAllocaMap_StructType(
       assert(m_Offsets.GetCurrentAlignedOffset() ==
           StructStart + OffsetAndMember.first &&
           "Offset mismatch in DIStructType");
-      if (auto* Member = llvm::dyn_cast<llvm::DIDerivedType>(OffsetAndMember.second))
+      if (auto *Member = llvm::dyn_cast<llvm::DIDerivedType>(OffsetAndMember.second)) 
       {
-          PopulateAllocaMap(
-              depth + 1,
-              Member->getBaseType().resolve(EmptyMap));
-      }
-      else
-      {
-          if (auto* CT = llvm::dyn_cast<llvm::DICompositeType>(OffsetAndMember.second))
+        if (IsResourceObject(Member))
           {
-              m_Offsets.Add(CT);
+            m_Offsets.AlignToAndAddUnhandledType(Member);
           }
           else
           {
-              assert(!"Don't know how to resolve this type");
+              PopulateAllocaMap(
+                  depth + 1,
+                  Member->getBaseType().resolve(EmptyMap));
           }
       }
   }
