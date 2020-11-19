@@ -29,38 +29,6 @@
 #define DEBUG_TYPE "dxil-dbg-value-to-dbg-declare"
 
 namespace {
-class Logger
-{
-    FILE* m_dbgOut = nullptr;
-    bool m_enabled = false;
-public:
-    void Log(int depth, char const* fmt, ...)
-    {
-        if (m_enabled)
-        {
-            if (m_dbgOut == nullptr)
-            {
-                fopen_s(&m_dbgOut, "d:\\temp\\dbg.txt", "w");
-            }
-            for (int i = 0; i < depth; ++i)
-            {
-                fprintf(m_dbgOut, " ");
-            }
-            va_list args;
-            va_start(args, fmt);
-            vfprintf(m_dbgOut, fmt, args);
-            va_end(args);
-            fflush(m_dbgOut);
-        }
-    }
-    void Enable()
-    {
-        m_enabled = true;
-    }
-};
-
-Logger g_logger;
-
 using OffsetInBits = unsigned;
 using SizeInBits = unsigned;
 
@@ -292,17 +260,6 @@ private:
       llvm::DbgValueInst *DbgValue);
 
   std::unordered_map<llvm::DIVariable *, std::unique_ptr<VariableRegisters>> m_Registers;
-
-  //int indent = 0;
-  //void DbgMessage(char const* format, ...)
-  //{
-  //  wchar_t buffer1[512] = {};
-  //  va_list args;
-  //  va_start(args, format);
-  //  vswprintf_s(buffer1, format, args);
-  //  va_end(args);
-  //}
-
 };
 }  // namespace
 
@@ -409,7 +366,6 @@ bool DxilDbgValueToDbgDeclare::runOnModule(
     if (auto *DbgValue = llvm::dyn_cast<llvm::DbgValueInst>(User))
     {
       Changed = true;
-      g_logger.Log(0, "Starting dbg.value %s\n", DbgValue->getName().str().c_str());
       handleDbgValue(M, DbgValue);
       DbgValue->eraseFromParent();
     }
@@ -429,20 +385,10 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
   }
 
   if (auto *PtrTy = llvm::dyn_cast<llvm::PointerType>(V->getType())) {
-      //__debugbreak();
     return;
   }
   
   llvm::DIVariable *Variable = DbgValue->getVariable();
-  if (Variable->getName().str() == "lightIndex")//global.reflection_map.0.0.3")
-  {
-      static int counter = 0;
-      counter++;
-      if (counter == 3)
-      {
-          g_logger.Enable();
-      }
-  }
   auto &Register = m_Registers[DbgValue->getVariable()];
   if (Register == nullptr)
   {
@@ -553,9 +499,6 @@ VariableRegisters::VariableRegisters(
   const llvm::DITypeIdentifierMap EmptyMap;
   llvm::DIType* Ty = m_Variable->getType().resolve(EmptyMap);
 
-  g_logger.Log(0, "VariableRegistgers for %s\n", Variable->getName().str().c_str());
-  //if ("this" == Variable->getName().str())
-  //    __debugbreak();
   PopulateAllocaMap(0, Ty);
   assert(m_Offsets.GetCurrentPackedOffset() ==
          DITypePeelTypeAlias(Ty)->getSizeInBits());
@@ -566,11 +509,6 @@ void VariableRegisters::PopulateAllocaMap(int depth,
     llvm::DIType *Ty
 )
 {
-  g_logger.Log(depth, "%sPopulateAllocaMap for type %s\n", Depth(depth), Ty->getName().str().c_str());
-  //if (Ty->getName().str() == "LinearSHSampleData")
-  //{
-  //    __debugbreak();
-  //}
   if (auto *DerivedTy = llvm::dyn_cast<llvm::DIDerivedType>(Ty))
   {
     const llvm::DITypeIdentifierMap EmptyMap;
@@ -736,8 +674,6 @@ void VariableRegisters::PopulateAllocaMap_ArrayType(int depth,
     llvm::DICompositeType* Ty
 )
 {
-  g_logger.Log(depth, "%sPopulateAllocaMap for ARRAY type %s\n", Depth(depth),
-          Ty->getName().str().c_str());
   unsigned NumElements = NumArrayElements(Ty);
   if (NumElements == 0)
   {
@@ -872,17 +808,9 @@ void VariableRegisters::PopulateAllocaMap_StructType(
     llvm::DICompositeType *Ty
 )
 {
-  g_logger.Log(depth, "%sPopulateAllocaMap for STRUCT type %s\n", Depth(depth),
-          Ty->getName().str().c_str());
-
-  //if (Ty->getName().str() == "Texture2DSet_Base")
-  //{
-  //    __debugbreak();
-  //}
   std::map<OffsetInBits, llvm::DIType*> SortedMembers;
   if (!SortMembers(Ty, &SortedMembers))
   {
-      g_logger.Log(depth, "PopulateAllocaMap for STRUCT type failed to sort members\n");
       m_Offsets.AlignToAndAddUnhandledType(Ty);
       return;
   }
@@ -894,18 +822,10 @@ void VariableRegisters::PopulateAllocaMap_StructType(
 
   for (auto OffsetAndMember : SortedMembers)
   {
-      g_logger.Log(depth, 
-          "%sPopulateAllocaMap for STRUCT offset %d for %s\n",
-          Depth(depth), OffsetAndMember.first, OffsetAndMember.second->getName().str().c_str());
       // Align the offsets to the member's type natural alignment. This
       // should always result in the current aligned offset being the
       // same as the member's offset.
-      g_logger.Log(depth, "%sAligned offset starts at %d\n",
-          Depth(depth),
-          m_Offsets.GetCurrentAlignedOffset());
       m_Offsets.AlignTo(OffsetAndMember.second);
-      g_logger.Log(depth, "%sAligned offset is now %d\n",
-          Depth(depth), m_Offsets.GetCurrentAlignedOffset());
       assert(m_Offsets.GetCurrentAlignedOffset() ==
           StructStart + OffsetAndMember.first &&
           "Offset mismatch in DIStructType");
