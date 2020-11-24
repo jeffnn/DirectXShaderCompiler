@@ -534,6 +534,9 @@ TEST_F(FileTest, ReturnStruct) { runFileTest("cf.return.struct.hlsl"); }
 TEST_F(FileTest, ReturnFromDifferentStorageClass) {
   runFileTest("cf.return.storage-class.hlsl");
 }
+TEST_F(FileTest, ReturnFromDifferentMemoryLayout) {
+  runFileTest("cf.return.memory-layout.hlsl");
+}
 
 // For control flows
 TEST_F(FileTest, ControlFlowNestedIfForStmt) { runFileTest("cf.if.for.hlsl"); }
@@ -597,6 +600,13 @@ TEST_F(FileTest, FunctionNoInline) { runFileTest("fn.noinline.hlsl"); }
 TEST_F(FileTest, StructMethodCall) {
   setBeforeHLSLLegalization();
   runFileTest("oo.struct.method.hlsl");
+}
+TEST_F(FileTest, StructDerivedMethods) {
+  setBeforeHLSLLegalization();
+  runFileTest("oo.struct.derived.methods.hlsl");
+}
+TEST_F(FileTest, StructDerivedMethodsOverride) {
+  runFileTest("oo.struct.derived.methods.override.hlsl");
 }
 TEST_F(FileTest, StructThisAlias) {
   setBeforeHLSLLegalization();
