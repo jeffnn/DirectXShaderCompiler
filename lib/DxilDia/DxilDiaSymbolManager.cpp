@@ -2141,7 +2141,7 @@ void dxil_dia::SymbolManager::Init(Session *pSes) {
 
   IFT(SMI.CreateFunctionsForAllCUs());
   IFT(SMI.CreateGlobalVariablesForAllCUs());
-  //IFT(SMI.CreateLocalVariables());
+  IFT(SMI.CreateLocalVariables());
   IFT(SMI.CreateLiveRanges());
   IFT(SMI.PopulateParentToChildrenIDMap(&m_parentToChildren));
 }
