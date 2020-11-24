@@ -341,6 +341,34 @@ void getBaseClassIndices(const CastExpr *expr,
   indices->clear();
 
   QualType derivedType = expr->getSubExpr()->getType();
+
+  // There are two types of UncheckedDerivedToBase/HLSLDerivedToBase casts:
+  //
+  // The first is when a derived object tries to access a member in the base.
+  // For example: derived.base_member.
+  // ImplicitCastExpr 'Base' lvalue <UncheckedDerivedToBase (Base)>
+  // `-DeclRefExpr 'Derived' lvalue Var 0x1f0d9bb2890 'derived' 'Derived'
+  //
+  // The second is when a pointer of the dervied is used to access members or
+  // methods of the base. There are currently no pointers in HLSL, but the
+  // method defintions can use the "this" pointer.
+  // For example:
+  // class Base { float value; };
+  // class Derviced : Base {
+  //   float4 getBaseValue() { return value; }
+  // };
+  //
+  // In this example, the 'this' pointer (pointing to Derived) is used inside
+  // 'getBaseValue', which is then cast to a Base pointer:
+  //
+  // ImplicitCastExpr 'Base *' <UncheckedDerivedToBase (Base)>
+  // `-CXXThisExpr 'Derviced *' this
+  //
+  // Therefore in order to obtain the derivedDecl below, we must make sure that
+  // we handle the second case too by using the pointee type.
+  if (derivedType->isPointerType())
+    derivedType = derivedType->getPointeeType();
+
   const auto *derivedDecl = derivedType->getAsCXXRecordDecl();
 
   // Go through the base cast chain: for each of the derived to base cast, find
@@ -363,6 +391,8 @@ void getBaseClassIndices(const CastExpr *expr,
 
     // Continue to proceed the next base in the chain
     derivedType = baseType;
+    if (derivedType->isPointerType())
+      derivedType = derivedType->getPointeeType();
     derivedDecl = derivedType->getAsCXXRecordDecl();
   }
 }
@@ -388,6 +418,10 @@ std::string getFnName(const FunctionDecl *fn) {
     if (const auto *st = dyn_cast<CXXRecordDecl>(memberFn->getDeclContext()))
       classOrStructName = st->getName().str() + ".";
   return getNamespacePrefix(fn) + classOrStructName + fn->getName().str();
+}
+
+bool isMemoryObjectDeclaration(SpirvInstruction *inst) {
+  return isa<SpirvVariable>(inst) || isa<SpirvFunctionParameter>(inst);
 }
 
 } // namespace
@@ -1929,7 +1963,7 @@ void SpirvEmitter::doReturnStmt(const ReturnStmt *stmt) {
       return;
 
     auto retType = retVal->getType();
-    if (retInfo->getStorageClass() != spv::StorageClass::Function &&
+    if (retInfo->getLayoutRule() != SpirvLayoutRule::Void &&
         retType->isStructureType()) {
       // We are returning some value from a non-Function storage class. Need to
       // create a temporary variable to "convert" the value to Function storage
@@ -2158,7 +2192,8 @@ SpirvInstruction *SpirvEmitter::processCall(const CallExpr *callExpr) {
         // Based on SPIR-V spec, function parameter must always be in Function
         // scope. If we pass a non-function scope argument, we need
         // the legalization.
-        if (objInstr->getStorageClass() != spv::StorageClass::Function)
+        if (objInstr->getStorageClass() != spv::StorageClass::Function ||
+            !isMemoryObjectDeclaration(objInstr))
           beforeHlslLegalization = true;
 
         args.push_back(objInstr);
@@ -6654,8 +6689,7 @@ const Expr *SpirvEmitter::collectArrayStructIndices(
             varDecl->getType(), VK_LValue);
 
     const Expr *base = collectArrayStructIndices(
-        indexing->getBase()->IgnoreParenNoopCasts(astContext), rawIndex,
-        rawIndices, indices, isMSOutAttribute);
+        indexing->getBase(), rawIndex, rawIndices, indices, isMSOutAttribute);
 
     if (isMSOutAttribute && base) {
       if (const auto *arg = dyn_cast<DeclRefExpr>(base)) {
@@ -9849,6 +9883,8 @@ SpirvInstruction *SpirvEmitter::processReportHit(const CallExpr *callExpr) {
 }
 
 void SpirvEmitter::processCallShader(const CallExpr *callExpr) {
+  bool nvRayTracing =
+      featureManager.isExtensionEnabled(Extension::NV_ray_tracing);
   SpirvInstruction *callDataLocInst = nullptr;
   SpirvInstruction *callDataStageVar = nullptr;
   const VarDecl *callDataArg = nullptr;
@@ -9903,10 +9939,16 @@ void SpirvEmitter::processCallShader(const CallExpr *callExpr) {
   // Id)
   llvm::SmallVector<SpirvInstruction *, 2> callShaderArgs;
   callShaderArgs.push_back(doExpr(args[0]));
-  callShaderArgs.push_back(callDataLocInst);
 
-  spvBuilder.createRayTracingOpsNV(spv::Op::OpExecuteCallableNV, QualType(),
-                                   callShaderArgs, callExpr->getExprLoc());
+  if (nvRayTracing) {
+    callShaderArgs.push_back(callDataLocInst);
+    spvBuilder.createRayTracingOpsNV(spv::Op::OpExecuteCallableNV, QualType(),
+                                     callShaderArgs, callExpr->getExprLoc());
+  } else {
+    callShaderArgs.push_back(callDataStageVar);
+    spvBuilder.createRayTracingOpsNV(spv::Op::OpExecuteCallableKHR, QualType(),
+                                     callShaderArgs, callExpr->getExprLoc());
+  }
 
   // Copy data back to argument
   tempLoad = spvBuilder.createLoad(callDataArg->getType(), callDataStageVar,
@@ -9916,6 +9958,9 @@ void SpirvEmitter::processCallShader(const CallExpr *callExpr) {
 }
 
 void SpirvEmitter::processTraceRay(const CallExpr *callExpr) {
+  bool nvRayTracing =
+      featureManager.isExtensionEnabled(Extension::NV_ray_tracing);
+
   SpirvInstruction *rayPayloadLocInst = nullptr;
   SpirvInstruction *rayPayloadStageVar = nullptr;
   const VarDecl *rayPayloadArg = nullptr;
@@ -10013,10 +10058,16 @@ void SpirvEmitter::processTraceRay(const CallExpr *callExpr) {
   traceArgs.push_back(tMin);
   traceArgs.push_back(direction);
   traceArgs.push_back(tMax);
-  traceArgs.push_back(rayPayloadLocInst);
 
-  spvBuilder.createRayTracingOpsNV(spv::Op::OpTraceNV, QualType(), traceArgs,
-                                   callExpr->getExprLoc());
+  if (nvRayTracing) {
+    traceArgs.push_back(rayPayloadLocInst);
+    spvBuilder.createRayTracingOpsNV(spv::Op::OpTraceNV, QualType(), traceArgs,
+                                     callExpr->getExprLoc());
+  } else {
+    traceArgs.push_back(rayPayloadStageVar);
+    spvBuilder.createRayTracingOpsNV(spv::Op::OpTraceRayKHR, QualType(),
+                                     traceArgs, callExpr->getExprLoc());
+  }
 
   // Copy arguments back to stage variable
   tempLoad = spvBuilder.createLoad(rayPayloadArg->getType(), rayPayloadStageVar,
@@ -11592,9 +11643,6 @@ void SpirvEmitter::addFunctionToWorkQueue(hlsl::DXIL::ShaderKind shaderKind,
 
 SpirvInstruction *
 SpirvEmitter::processTraceRayInline(const CXXMemberCallExpr *expr) {
-  emitWarning("SPV_KHR_ray_query is currently a provisional extension and "
-              "might change in ways that are not backwards compatible",
-              expr->getExprLoc());
   const auto object = expr->getImplicitObjectArgument();
   uint32_t templateFlags = hlsl::GetHLSLResourceTemplateUInt(object->getType());
   const auto constFlags = spvBuilder.getConstantInt(
@@ -11675,9 +11723,6 @@ SpirvEmitter::processTraceRayInline(const CXXMemberCallExpr *expr) {
 SpirvInstruction *
 SpirvEmitter::processRayQueryIntrinsics(const CXXMemberCallExpr *expr,
                                         hlsl::IntrinsicOp opcode) {
-  emitWarning("SPV_KHR_ray_query is currently a provisional extension and "
-              "might change in ways that are not backwards compatible",
-              expr->getExprLoc());
   const auto object = expr->getImplicitObjectArgument();
   SpirvInstruction *rayqueryObj = loadIfAliasVarRef(object);
 
