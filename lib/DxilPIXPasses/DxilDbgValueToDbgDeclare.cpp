@@ -108,21 +108,6 @@ public:
     return Ret;
   }
 
-  //Special case for resource references (like "Texture2D<vector<float, 4> >"), which are DICompositTypes, and so not a DIBasicType, but have no members so can't be resolved into DIBasicTypes.
-  OffsetInBits Add(
-      llvm::DICompositeType*Ty
-  )
-  {
-    m_PackedOffsetToAlignedOffset[m_CurrentPackedOffset] = m_CurrentAlignedOffset;
-    m_AlignedOffsetToPackedOffset[m_CurrentAlignedOffset] = m_CurrentPackedOffset;
-
-    const OffsetInBits Ret = m_CurrentAlignedOffset;
-    m_CurrentPackedOffset += Ty->getSizeInBits();
-    m_CurrentAlignedOffset += Ty->getSizeInBits();
-
-    return Ret;
-  }
-
   // AlignToAndAddUnhandledType is used for error handling when Ty
   // could not be handled by the transformation. This is a best-effort
   // way to continue the pass by ignoring the current type and hoping
@@ -133,6 +118,17 @@ public:
   )
   {
     AlignTo(Ty);
+    m_CurrentPackedOffset += Ty->getSizeInBits();
+    m_CurrentAlignedOffset += Ty->getSizeInBits();
+  }
+
+  void AddResourceType(llvm::DIType *Ty)
+  {
+    m_PackedOffsetToAlignedOffset[m_CurrentPackedOffset] =
+        m_CurrentAlignedOffset;
+    m_AlignedOffsetToPackedOffset[m_CurrentAlignedOffset] =
+        m_CurrentPackedOffset;
+
     m_CurrentPackedOffset += Ty->getSizeInBits();
     m_CurrentAlignedOffset += Ty->getSizeInBits();
   }
@@ -390,10 +386,7 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
   }
   
   llvm::DIVariable *Variable = DbgValue->getVariable();
-  if (Variable->getName().str() == "global.reflection_map.0.0.3") {
-    (void)Variable->getName();
-  }
-  auto &Register = m_Registers[DbgValue->getVariable()];
+  auto &Register = m_Registers[Variable];
   if (Register == nullptr)
   {
     Register.reset(new VariableRegisters(Variable, &M));
@@ -403,10 +396,6 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
   // offset, which we'll need in order to determine the (packed)
   // offset of each scalar Value in DbgValue.
   llvm::DIExpression* expression = DbgValue->getExpression();
-  if (!expression->isBitPiece() && expression->getNumElements() == 0)
-  {
-      return;
-  }
   const OffsetInBits AlignedOffsetFromVar =
       GetAlignedOffsetFromDIExpression(expression);
   OffsetInBits PackedOffsetFromVar;
@@ -444,8 +433,11 @@ void DxilDbgValueToDbgDeclare::handleDbgValue(
       continue;
     }
 
-    auto *GEP = B.CreateGEP(AllocaInst, {Zero, Zero});
-    B.CreateStore(VO.m_V, GEP);
+    if (AllocaInst->getAllocatedType()->getArrayElementType() == VO.m_V->getType())
+    {
+        auto* GEP = B.CreateGEP(AllocaInst, { Zero, Zero });
+        B.CreateStore(VO.m_V, GEP);
+    }
   }
 }
 
@@ -695,7 +687,12 @@ static bool SortMembers(
     std::map<OffsetInBits, llvm::DIDerivedType*> *SortedMembers
 )
 {
-    for (auto* Element : Ty->getElements())
+    auto Elements = Ty->getElements();
+    if (Elements.begin() == Elements.end())
+    {
+        return false;
+    }
+    for (auto* Element : Elements)
     {
         switch (Element->getTag())
         {
@@ -791,7 +788,7 @@ void VariableRegisters::PopulateAllocaMap_StructType(
         StructStart + OffsetAndMember.first &&
         "Offset mismatch in DIStructType");
     if (IsResourceObject(OffsetAndMember.second)) {
-      m_Offsets.AlignToAndAddUnhandledType(OffsetAndMember.second);
+      m_Offsets.AddResourceType(OffsetAndMember.second);
     } else {
       PopulateAllocaMap(
           OffsetAndMember.second->getBaseType().resolve(EmptyMap));
