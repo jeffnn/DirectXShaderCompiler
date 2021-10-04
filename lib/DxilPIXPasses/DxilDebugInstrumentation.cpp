@@ -282,6 +282,16 @@ private:
                            BuilderContext &BC, std::uint32_t InstNum, Value *V,
                            std::uint32_t ValueOrdinal,
                            Value *ValueOrdinalIndex);
+
+  struct InstructionAndValueOrdinals
+  {
+    bool Valid;
+    std::uint32_t InstructionOrdinal;
+    std::uint32_t ValueOrdinalBase;
+    llvm::Value *ValueOrdinalIndex;
+  };
+
+  InstructionAndValueOrdinals getOrdinals(BuilderContext& BC, Instruction* Inst);
 };
 
 void DxilDebugInstrumentation::applyOptions(PassOptions O) {
@@ -809,6 +819,26 @@ void DxilDebugInstrumentation::addStepEntryForType(
   }
 }
 
+DxilDebugInstrumentation::InstructionAndValueOrdinals DxilDebugInstrumentation::getOrdinals(BuilderContext& BC, Instruction* Inst) {
+  
+  InstructionAndValueOrdinals ret{};
+
+  if (!pix_dxil::PixDxilInstNum::FromInst(Inst, &ret.InstructionOrdinal)) {
+    return ret;
+  }
+
+  if (!pix_dxil::PixDxilReg::FromInst(Inst, &ret.ValueOrdinalBase)) {
+    return ret;;
+  }
+
+  ret.ValueOrdinalIndex = BC.Builder.getInt32(0);
+
+  ret.Valid = true;
+  return ret;
+}
+
+
+
 void DxilDebugInstrumentation::addStoreStepDebugEntry(BuilderContext& BC,
     StoreInst* Inst) {
     std::uint32_t ValueOrdinalBase;
@@ -1055,19 +1085,10 @@ bool DxilDebugInstrumentation::RunOnFunction(
         ValueNPhi.Phi->setIncomingBlock(ValueNPhi.Index, NewBlock);
 
         // Add instrumentation to the new block
-        std::uint32_t RegNum;
-        if (!pix_dxil::PixDxilReg::FromInst(ValueNPhi.Phi, &RegNum)) {
-          continue;
-        }
-
-        std::uint32_t InstNum;
-        if (!pix_dxil::PixDxilInstNum::FromInst(ValueNPhi.Phi, &InstNum)) {
-          continue;
-        }
-
         BuilderContext BC{M, DM, Ctx, HlslOP, Builder};
-        addStepDebugEntryValue(BC, InstNum, ValueNPhi.Val, RegNum,
-                               BC.Builder.getInt32(0));
+        auto ordinals = getOrdinals(BC, ValueNPhi.Phi);
+        addStepDebugEntryValue(BC, ordinals.InstructionOrdinal, ValueNPhi.Val, ordinals.ValueOrdinalBase,
+                               ordinals.ValueOrdinalIndex);
       }
 
       // Add a branch to the new block to point to the current block
