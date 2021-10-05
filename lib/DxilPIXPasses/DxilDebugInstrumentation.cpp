@@ -271,7 +271,6 @@ private:
   void addDebugEntryValue(BuilderContext &BC, Value *TheValue);
   void addInvocationStartMarker(BuilderContext &BC);
   void reserveDebugEntrySpace(BuilderContext &BC, uint32_t SpaceInDwords);
-  void addStoreStepDebugEntry(BuilderContext &BC, StoreInst *Inst);
   void addStepDebugEntry(BuilderContext& BC, Instruction* Inst);
   void addStepDebugEntryValue(BuilderContext &BC, std::uint32_t InstNum,
                               Value *V, std::uint32_t ValueOrdinal,
@@ -288,10 +287,11 @@ private:
     bool Valid;
     std::uint32_t InstructionOrdinal;
     std::uint32_t ValueOrdinalBase;
-    llvm::Value *ValueOrdinalIndex;
+    Value* ValueOrdinalIndex;
+    Value* ValueToStore;
   };
 
-  InstructionAndValueOrdinals getOrdinals(BuilderContext& BC, Instruction* Inst);
+  InstructionAndValueOrdinals getInstructionAndValueOrdinals(BuilderContext& BC, Instruction* Inst);
 };
 
 void DxilDebugInstrumentation::applyOptions(PassOptions O) {
@@ -819,7 +819,7 @@ void DxilDebugInstrumentation::addStepEntryForType(
   }
 }
 
-DxilDebugInstrumentation::InstructionAndValueOrdinals DxilDebugInstrumentation::getOrdinals(BuilderContext& BC, Instruction* Inst) {
+DxilDebugInstrumentation::InstructionAndValueOrdinals DxilDebugInstrumentation::getInstructionAndValueOrdinals(BuilderContext& BC, Instruction* Inst) {
   
   InstructionAndValueOrdinals ret{};
 
@@ -827,40 +827,30 @@ DxilDebugInstrumentation::InstructionAndValueOrdinals DxilDebugInstrumentation::
     return ret;
   }
 
-  if (!pix_dxil::PixDxilReg::FromInst(Inst, &ret.ValueOrdinalBase)) {
-    return ret;;
+  if (auto* St = llvm::dyn_cast<llvm::StoreInst>(Inst)) {
+    ret.ValueToStore = St->getValueOperand();
+    std::uint32_t UnusedValueOrdinalSize;
+    if (!pix_dxil::PixAllocaRegWrite::FromInst(St, &ret.ValueOrdinalBase,
+                                               &UnusedValueOrdinalSize,
+                                               &ret.ValueOrdinalIndex)) {
+      return ret;
+    }
+  }
+  else {
+    if (!pix_dxil::PixDxilReg::FromInst(Inst, &ret.ValueOrdinalBase)) {
+      return ret;;
+    }
+
+    ret.ValueToStore = Inst;
+    ret.ValueOrdinalIndex = BC.Builder.getInt32(0);
   }
 
-  ret.ValueOrdinalIndex = BC.Builder.getInt32(0);
+  if (PIXPassHelpers::IsAllocateRayQueryInstruction(ret.ValueToStore)) {
+    return ret;
+  }
 
   ret.Valid = true;
   return ret;
-}
-
-
-
-void DxilDebugInstrumentation::addStoreStepDebugEntry(BuilderContext& BC,
-    StoreInst* Inst) {
-    std::uint32_t ValueOrdinalBase;
-    std::uint32_t UnusedValueOrdinalSize;
-    llvm::Value* ValueOrdinalIndex;
-    if (!pix_dxil::PixAllocaRegWrite::FromInst(Inst, &ValueOrdinalBase,
-        &UnusedValueOrdinalSize,
-        &ValueOrdinalIndex)) {
-        return;
-    }
-
-    std::uint32_t InstNum;
-    if (!pix_dxil::PixDxilInstNum::FromInst(Inst, &InstNum)) {
-        return;
-    }
-
-    if (PIXPassHelpers::IsAllocateRayQueryInstruction(Inst->getValueOperand())) {
-        return;
-    }
-
-    addStepDebugEntryValue(BC, InstNum, Inst->getValueOperand(), ValueOrdinalBase,
-        ValueOrdinalIndex);
 }
 
 void DxilDebugInstrumentation::addStepDebugEntry(BuilderContext &BC,
@@ -868,26 +858,11 @@ void DxilDebugInstrumentation::addStepDebugEntry(BuilderContext &BC,
   if (Inst->getOpcode() == Instruction::OtherOps::PHI) {
     return;
   }
-  if (PIXPassHelpers::IsAllocateRayQueryInstruction(Inst)) {
-      return;
-  }
 
-  if (auto *St = llvm::dyn_cast<llvm::StoreInst>(Inst)) {
-    addStoreStepDebugEntry(BC, St);
-    return;
+  auto ordinals = getInstructionAndValueOrdinals(BC, Inst);
+  if (ordinals.Valid) {
+    addStepDebugEntryValue(BC, ordinals.InstructionOrdinal, ordinals.ValueToStore, ordinals.ValueOrdinalBase, ordinals.ValueOrdinalIndex);
   }
-
-  std::uint32_t RegNum;
-  if (!pix_dxil::PixDxilReg::FromInst(Inst, &RegNum)) {
-    return;
-  }
-
-  std::uint32_t InstNum;
-  if (!pix_dxil::PixDxilInstNum::FromInst(Inst, &InstNum)) {
-    return;
-  }
-
-  addStepDebugEntryValue(BC, InstNum, Inst, RegNum, BC.Builder.getInt32(0));
 }
 
 void DxilDebugInstrumentation::addStepDebugEntryValue(
@@ -1086,9 +1061,11 @@ bool DxilDebugInstrumentation::RunOnFunction(
 
         // Add instrumentation to the new block
         BuilderContext BC{M, DM, Ctx, HlslOP, Builder};
-        auto ordinals = getOrdinals(BC, ValueNPhi.Phi);
-        addStepDebugEntryValue(BC, ordinals.InstructionOrdinal, ValueNPhi.Val, ordinals.ValueOrdinalBase,
-                               ordinals.ValueOrdinalIndex);
+        auto ordinals = getInstructionAndValueOrdinals(BC, ValueNPhi.Phi);
+        if (ordinals.Valid) {
+          addStepDebugEntryValue(BC, ordinals.InstructionOrdinal, ValueNPhi.Val, ordinals.ValueOrdinalBase,
+            ordinals.ValueOrdinalIndex);
+        }
       }
 
       // Add a branch to the new block to point to the current block
