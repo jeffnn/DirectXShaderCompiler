@@ -839,7 +839,7 @@ void DxilDebugInstrumentation::addStepEntryForType(
     addDebugEntryValue(BC, EncodedValueOrdinalAndIndex);
   }
 }
-
+// test
 void DxilDebugInstrumentation::addStoreStepDebugEntry(BuilderContext& BC,
     StoreInst* Inst) {
     std::uint32_t ValueOrdinalBase;
