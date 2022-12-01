@@ -30,6 +30,7 @@
 #include "dxc/dxcpix.h"
 #include "dxc/Support/microcom.h"
 #include "dxc/DxilContainer/DxilContainer.h"
+#include "dxc/DxilContainer/DxcContainerBuilder.h"
 #include "dxc/DXIL/DxilUtil.h"
 #include "dxc/DXIL/DxilPDB.h"
 #include "dxc/DXIL/DxilMetadataHelper.h"
@@ -242,7 +243,13 @@ struct PdbRecompilerIncludeHandler : public IDxcIncludeHandler {
   }
 };
 
+<<<<<<< HEAD
 struct DxcPdbUtils : public IDxcPdbUtils, public IDxcPixDxilDebugInfoFactory
+=======
+struct DxcPdbUtils : public IDxcPdbUtils2,
+                     public IDxcPixDxilDebugInfoFactory,
+                     public IDxcPixContainerOperations
+>>>>>>> d65b29413 (Checkpoint)
 {
 private:
   DXC_MICROCOM_TM_REF_FIELDS()
@@ -614,7 +621,19 @@ public:
   DxcPdbUtils(IMalloc *pMalloc) : m_dwRef(0), m_pMalloc(pMalloc) {}
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) override {
+<<<<<<< HEAD
     return DoBasicQueryInterface<IDxcPdbUtils, IDxcPixDxilDebugInfoFactory>(this, iid, ppvObject);
+=======
+    HRESULT hr =
+        DoBasicQueryInterface<
+            IDxcPdbUtils2, 
+            IDxcPixDxilDebugInfoFactory,
+            IDxcPixContainerOperations>(this, iid, ppvObject);
+    if (FAILED(hr)) {
+      return DoBasicQueryInterface<IDxcPdbUtils>(&m_Adapter, iid, ppvObject);
+    }
+    return hr;
+>>>>>>> d65b29413 (Checkpoint)
   }
 
   HRESULT STDMETHODCALLTYPE Load(_In_ IDxcBlob *pPdbOrDxil) override {
@@ -975,6 +994,22 @@ public:
     m_pCompiler = pCompiler;
     m_pCachedRecompileResult = nullptr; // Clear the previously compiled result
     return S_OK;
+  }
+
+  
+  // IDxcPixContainerOperations:
+
+  STDMETHODIMP AddPart(_In_ IDxcContainerBuilder *container,
+                                          _In_ UINT32 fourCC,
+                                          _In_ IDxcBlob *pSource) override 
+  {
+    auto *builder = static_cast<DxcContainerBuilder *>(container);
+    return builder->AddPartWithoutRestrictions(fourCC, pSource);
+  }
+
+  STDMETHODIMP RemovePart(_In_ IDxcContainerBuilder *container, _In_ UINT32 fourCC)  override
+  {
+    return E_NOTIMPL;
   }
 };
 
