@@ -28,7 +28,12 @@ public:
   HRESULT STDMETHODCALLTYPE Load(_In_ IDxcBlob *pDxilContainerHeader) override; // Loads DxilContainer to the builder
   HRESULT STDMETHODCALLTYPE AddPart(_In_ UINT32 fourCC, _In_ IDxcBlob *pSource) override; // Add the given part with fourCC
   HRESULT STDMETHODCALLTYPE RemovePart(_In_ UINT32 fourCC) override;                // Remove the part with fourCC
-  HRESULT STDMETHODCALLTYPE SerializeContainer(_Out_ IDxcOperationResult **ppResult) override; // Builds a container of the given container builder state
+
+  void RemovePartImpl(UINT32 fourCC);
+
+  HRESULT STDMETHODCALLTYPE
+  SerializeContainer(_Out_ IDxcOperationResult **ppResult)
+      override; // Builds a container of the given container builder state
 
   DXC_MICROCOM_TM_ADDREF_RELEASE_IMPL()
   DXC_MICROCOM_TM_CTOR(DxcContainerBuilder)
@@ -41,6 +46,8 @@ public:
     m_RequireValidation = false;
     m_HasPrivateData = false;
   }
+
+  HRESULT AddPartWithoutRestrictions(_In_ UINT32 fourCC, _In_ IDxcBlob *pSource);
 
 protected:
   DXC_MICROCOM_TM_REF_FIELDS()
