@@ -253,13 +253,9 @@ public:
   }
 };
 
-<<<<<<< HEAD
-struct DxcPdbUtils : public IDxcPdbUtils,
+struct DxcPdbUtils : public IDxcPdbUtils2,
                      public IDxcPixDxilDebugInfoFactory,
                      public IDxcPixContainerOperations
-=======
-struct DxcPdbUtils : public IDxcPdbUtils2, public IDxcPixDxilDebugInfoFactory
->>>>>>> main
 {
 private:
   // Making the adapter and this interface the same object and share reference counting.
@@ -804,18 +800,15 @@ public:
   DxcPdbUtils(IMalloc *pMalloc) : m_dwRef(0), m_pMalloc(pMalloc), m_Adapter(this) {}
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) override {
-<<<<<<< HEAD
-    return DoBasicQueryInterface<
-            IDxcPdbUtils, 
+    HRESULT hr =
+        DoBasicQueryInterface<
+            IDxcPdbUtils2, 
             IDxcPixDxilDebugInfoFactory,
             IDxcPixContainerOperations>(this, iid, ppvObject);
-=======
-    HRESULT hr = DoBasicQueryInterface<IDxcPdbUtils2, IDxcPixDxilDebugInfoFactory>(this, iid, ppvObject);
     if (FAILED(hr)) {
       return DoBasicQueryInterface<IDxcPdbUtils>(&m_Adapter, iid, ppvObject);
     }
     return hr;
->>>>>>> main
   }
 
   HRESULT STDMETHODCALLTYPE Load(_In_ IDxcBlob *pPdbOrDxil) override {

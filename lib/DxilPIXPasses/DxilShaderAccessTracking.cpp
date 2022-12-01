@@ -894,15 +894,6 @@ bool DxilShaderAccessTracking::runOnModule(Module &M) {
       }
     }
   } else {
-<<<<<<< HEAD
-    {
-      auto *PIXStructType = PIXPassHelpers::CreateUAVType(DM);
-
-      if (DM.m_ShaderFlags.GetForceEarlyDepthStencil()) {
-        if (OSOverride != nullptr) {
-          formatted_raw_ostream FOS(*OSOverride);
-          FOS << "ShouldAssumeDsvAccess";
-=======
 
     auto instrumentableFunctions =
         PIXPassHelpers::GetAllInstrumentableFunctions(DM);
@@ -921,29 +912,12 @@ bool DxilShaderAccessTracking::runOnModule(Module &M) {
         shaderKind = ShaderModel->GetKind();
         if (shaderKind == DXIL::ShaderKind::Library) {
           continue;
->>>>>>> main
         }
       } else {
         hlsl::DxilFunctionProps const &props = DM.GetDxilFunctionProps(F);
         shaderKind = props.shaderKind;
       }
 
-<<<<<<< HEAD
-          m_FunctionToUAVHandle[&F] = PIXPassHelpers::CreateUAV(DM, PIXStructType, Builder, uavRegId++, "PIX_CountUAV_Handle");
-          auto const* shaderModel = DM.GetShaderModel();
-          auto shaderKind = shaderModel->GetKind();
-          OP *HlslOP = DM.GetOP();
-          for (int accessStyle = static_cast<int>(ResourceAccessStyle::None);
-              accessStyle < static_cast<int>(ResourceAccessStyle::EndOfEnum);
-              ++accessStyle)
-          {
-              ResourceAccessStyle style = static_cast<ResourceAccessStyle>(accessStyle);
-              m_FunctionToEncodedAccess[&F][style] =
-                  HlslOP->GetU32Const(EncodeShaderModel(shaderKind) |
-                      EncodeAccess(style));
-          }
-        }
-=======
       IRBuilder<> Builder(F->getEntryBlock().getFirstInsertionPt());
 
       m_FunctionToUAVHandle[F] = PIXPassHelpers::CreateUAV(
@@ -956,7 +930,6 @@ bool DxilShaderAccessTracking::runOnModule(Module &M) {
             static_cast<ResourceAccessStyle>(accessStyle);
         m_FunctionToEncodedAccess[F][style] = HlslOP->GetU32Const(
             EncodeShaderModel(shaderKind) | EncodeAccess(style));
->>>>>>> main
       }
     }
     DM.ReEmitDxilResources();
