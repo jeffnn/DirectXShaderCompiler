@@ -243,13 +243,9 @@ struct PdbRecompilerIncludeHandler : public IDxcIncludeHandler {
   }
 };
 
-<<<<<<< HEAD
-struct DxcPdbUtils : public IDxcPdbUtils, public IDxcPixDxilDebugInfoFactory
-=======
-struct DxcPdbUtils : public IDxcPdbUtils2,
+struct DxcPdbUtils : public IDxcPdbUtils,
                      public IDxcPixDxilDebugInfoFactory,
                      public IDxcPixContainerOperations
->>>>>>> d65b29413 (Checkpoint)
 {
 private:
   DXC_MICROCOM_TM_REF_FIELDS()
@@ -621,19 +617,12 @@ public:
   DxcPdbUtils(IMalloc *pMalloc) : m_dwRef(0), m_pMalloc(pMalloc) {}
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) override {
-<<<<<<< HEAD
-    return DoBasicQueryInterface<IDxcPdbUtils, IDxcPixDxilDebugInfoFactory>(this, iid, ppvObject);
-=======
     HRESULT hr =
         DoBasicQueryInterface<
-            IDxcPdbUtils2, 
+            IDxcPdbUtils, 
             IDxcPixDxilDebugInfoFactory,
             IDxcPixContainerOperations>(this, iid, ppvObject);
-    if (FAILED(hr)) {
-      return DoBasicQueryInterface<IDxcPdbUtils>(&m_Adapter, iid, ppvObject);
-    }
     return hr;
->>>>>>> d65b29413 (Checkpoint)
   }
 
   HRESULT STDMETHODCALLTYPE Load(_In_ IDxcBlob *pPdbOrDxil) override {
