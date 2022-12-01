@@ -139,21 +139,26 @@ llvm::CallInst *CreateHandleForResource(hlsl::DxilModule &DM,
   }
 }
 
-// Set up a UAV with structure of a single int
-llvm::CallInst *CreateUAV(DxilModule &DM, IRBuilder<> &Builder,
-                          unsigned int registerId, const char *name) {
+llvm::StructType *CreateUAVType(DxilModule &DM) {
   LLVMContext &Ctx = DM.GetModule()->getContext();
-
   SmallVector<llvm::Type *, 1> Elements{Type::getInt32Ty(Ctx)};
   llvm::StructType *UAVStructTy =
       llvm::StructType::create(Elements, "class.RWStructuredBuffer");
+  return UAVStructTy;
+}
 
+// Set up a UAV with structure of a single int
+llvm::CallInst *CreateUAV(DxilModule &DM, 
+                          llvm::StructType *UAVStructTy,
+                          IRBuilder<> &Builder,
+                          unsigned int registerId,
+                          const char *name) {
   std::unique_ptr<DxilResource> pUAV = llvm::make_unique<DxilResource>();
 
   auto const *shaderModel = DM.GetShaderModel();
   if (shaderModel->IsLib()) {
-    GlobalVariable *NewGV = cast<GlobalVariable>(
-        DM.GetModule()->getOrInsertGlobal("PIXUAV", UAVStructTy));
+    auto *Global = DM.GetModule()->getOrInsertGlobal("PIXUAV", UAVStructTy);
+    GlobalVariable *NewGV = cast<GlobalVariable>(Global);
     NewGV->setConstant(false);
     NewGV->setLinkage(GlobalValue::ExternalLinkage);
     NewGV->setThreadLocal(false);

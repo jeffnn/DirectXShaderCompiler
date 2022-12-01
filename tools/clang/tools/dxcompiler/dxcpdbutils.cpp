@@ -617,12 +617,10 @@ public:
   DxcPdbUtils(IMalloc *pMalloc) : m_dwRef(0), m_pMalloc(pMalloc) {}
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) override {
-    HRESULT hr =
-        DoBasicQueryInterface<
+    return DoBasicQueryInterface<
             IDxcPdbUtils, 
             IDxcPixDxilDebugInfoFactory,
             IDxcPixContainerOperations>(this, iid, ppvObject);
-    return hr;
   }
 
   HRESULT STDMETHODCALLTYPE Load(_In_ IDxcBlob *pPdbOrDxil) override {
@@ -994,11 +992,6 @@ public:
   {
     auto *builder = static_cast<DxcContainerBuilder *>(container);
     return builder->AddPartWithoutRestrictions(fourCC, pSource);
-  }
-
-  STDMETHODIMP RemovePart(_In_ IDxcContainerBuilder *container, _In_ UINT32 fourCC)  override
-  {
-    return E_NOTIMPL;
   }
 };
 

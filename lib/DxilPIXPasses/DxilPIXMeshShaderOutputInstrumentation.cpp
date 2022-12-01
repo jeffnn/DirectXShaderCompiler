@@ -300,7 +300,8 @@ bool DxilPIXMeshShaderOutputInstrumentation::runOnModule(Module &M)
 
   m_OffsetMask = BC.HlslOP->GetU32Const(UAVDumpingGroundOffset() - 1);
 
-  m_OutputUAV = CreateUAV(DM, Builder, 0, "PIX_DebugUAV_Handle");
+  auto *PIXStructType = PIXPassHelpers::CreateUAVType(DM);
+  m_OutputUAV = CreateUAV(DM, PIXStructType, Builder, 0, "PIX_DebugUAV_Handle");
 
   if (FirstNewStructGetMeshPayload == nullptr) {
     m_threadUniquifier.push_back(BC.HlslOP->GetU32Const(0));

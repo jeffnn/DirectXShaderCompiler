@@ -18,7 +18,10 @@
 namespace PIXPassHelpers
 {
 	bool IsAllocateRayQueryInstruction(llvm::Value* Val);
-    llvm::CallInst* CreateUAV(hlsl::DxilModule& DM, llvm::IRBuilder<>& Builder,
+    llvm::StructType *CreateUAVType(hlsl::DxilModule &DM);
+        llvm::CallInst *CreateUAV(hlsl::DxilModule &DM,
+                                  llvm::StructType * type,
+                                  llvm::IRBuilder<> &Builder,
                                   unsigned int registerId, const char *name);
     llvm::CallInst* CreateHandleForResource(hlsl::DxilModule& DM, llvm::IRBuilder<>& Builder,
         hlsl::DxilResourceBase * resource,

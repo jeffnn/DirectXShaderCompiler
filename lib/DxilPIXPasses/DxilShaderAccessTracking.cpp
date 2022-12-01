@@ -733,6 +733,8 @@ bool DxilShaderAccessTracking::runOnModule(Module &M) {
     }
   } else {
     {
+      auto *PIXStructType = PIXPassHelpers::CreateUAVType(DM);
+
       if (DM.m_ShaderFlags.GetForceEarlyDepthStencil()) {
         if (OSOverride != nullptr) {
           formatted_raw_ostream FOS(*OSOverride);
@@ -744,7 +746,7 @@ bool DxilShaderAccessTracking::runOnModule(Module &M) {
         if (!F.getBasicBlockList().empty()) {
           IRBuilder<> Builder(F.getEntryBlock().getFirstInsertionPt());
 
-          m_FunctionToUAVHandle[&F] = PIXPassHelpers::CreateUAV(DM, Builder, uavRegId++, "PIX_CountUAV_Handle");
+          m_FunctionToUAVHandle[&F] = PIXPassHelpers::CreateUAV(DM, PIXStructType, Builder, uavRegId++, "PIX_CountUAV_Handle");
           auto const* shaderModel = DM.GetShaderModel();
           auto shaderKind = shaderModel->GetKind();
           OP *HlslOP = DM.GetOP();

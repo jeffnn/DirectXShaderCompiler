@@ -81,23 +81,17 @@ HRESULT STDMETHODCALLTYPE DxcContainerBuilder::RemovePart(_In_ UINT32 fourCC) {
                 fourCC == DxilFourCC::DFCC_PrivateData ||
                 fourCC == DxilFourCC::DFCC_ShaderStatistics,
             E_INVALIDARG); // You can only remove debug info, debug info name, rootsignature, or private data blob
-
-    RemovePartImpl(fourCC);
-
+    PartList::iterator it =
+      std::find_if(m_parts.begin(), m_parts.end(),
+        [&](DxilPart part) { return part.m_fourCC == fourCC; });
+    IFTBOOL(it != m_parts.end(), DXC_E_MISSING_PART);
+    m_parts.erase(it);
+    if (fourCC == DxilFourCC::DFCC_PrivateData) {
+      m_HasPrivateData = false;
+    }
     return S_OK;
   }
   CATCH_CPP_RETURN_HRESULT();
-}
-
-void DxcContainerBuilder::RemovePartImpl(UINT32 fourCC) {
-  PartList::iterator it =
-      std::find_if(m_parts.begin(), m_parts.end(),
-                   [&](DxilPart part) { return part.m_fourCC == fourCC; });
-  IFTBOOL(it != m_parts.end(), DXC_E_MISSING_PART);
-  m_parts.erase(it);
-  if (fourCC == DxilFourCC::DFCC_PrivateData) {
-    m_HasPrivateData = false;
-  }
 }
 
 HRESULT STDMETHODCALLTYPE DxcContainerBuilder::SerializeContainer(_Out_ IDxcOperationResult **ppResult) {

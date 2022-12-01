@@ -213,8 +213,6 @@ IDxcPixContainerOperations : public IUnknown
   virtual STDMETHODIMP AddPart(_In_ IDxcContainerBuilder *container,
                                _In_ UINT32 fourCC,
                                _In_ IDxcBlob *pSource) = 0;
-  virtual STDMETHODIMP RemovePart(_In_ IDxcContainerBuilder *container,
-                                  _In_ UINT32 fourCC) = 0;
 };
 
 #ifndef CLSID_SCOPE

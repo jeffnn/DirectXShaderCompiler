@@ -257,7 +257,7 @@ public:
   bool runOnModule(Module &M) override;
 
   bool RunOnFunction(Module& M, DxilModule& DM, 
-    llvm::Function *function);
+    llvm::Function *function, StructType * PIXStructType);
 
 private:
   SystemValueIndices addRequiredSystemValues(BuilderContext &BC, DXIL::ShaderKind shaderKind);
@@ -949,36 +949,37 @@ void DxilDebugInstrumentation::addStepDebugEntryValue(
 
 bool DxilDebugInstrumentation::runOnModule(Module &M) {
   DxilModule &DM = M.GetOrCreateDxilModule();
-
+  auto *PIXStructType = PIXPassHelpers::CreateUAVType(DM);
   auto ShaderModel = DM.GetShaderModel();
   auto shaderKind = ShaderModel->GetKind();
 
   bool modified = false;
   if (shaderKind == DXIL::ShaderKind::Library) {
     for (llvm::Function& F : M.functions()) {
-      modified = modified | RunOnFunction(M, DM, &F); 
+      modified = modified | RunOnFunction(M, DM, &F, PIXStructType); 
       return modified;
     }
   }
   else {
     llvm::Function *entryFunction = PIXPassHelpers::GetEntryFunction(DM);
-    modified = RunOnFunction(M, DM, entryFunction);
+    modified = RunOnFunction(M, DM, entryFunction, PIXStructType);
   }
   return modified;
 }
 
 bool DxilDebugInstrumentation::RunOnFunction(
-  Module &M, 
-  DxilModule &DM,
-  llvm::Function * entryFunction) 
+  Module& M, 
+  DxilModule& DM,
+  llvm::Function *function,
+  StructType * PIXStructType) 
 {
   DXIL::ShaderKind shaderKind = DXIL::ShaderKind::Invalid;
-  if (!DM.HasDxilFunctionProps(entryFunction)) {
+  if (!DM.HasDxilFunctionProps(function)) {
     auto ShaderModel = DM.GetShaderModel();
     shaderKind = ShaderModel->GetKind();
   } else {
     hlsl::DxilFunctionProps const &props =
-        DM.GetDxilFunctionProps(entryFunction);
+        DM.GetDxilFunctionProps(function);
     shaderKind = props.shaderKind;
   }
 
@@ -1004,8 +1005,8 @@ bool DxilDebugInstrumentation::RunOnFunction(
 
   // First record pointers to all instructions in the function:
   std::vector<Instruction *> AllInstructions;
-  for (inst_iterator I = inst_begin(entryFunction),
-                     E = inst_end(entryFunction);
+  for (inst_iterator I = inst_begin(function),
+                     E = inst_end(function);
        I != E; ++I) {
     AllInstructions.push_back(&*I);
   }
@@ -1024,7 +1025,7 @@ bool DxilDebugInstrumentation::RunOnFunction(
   //
 
   Instruction *firstInsertionPt =
-      dxilutil::FirstNonAllocaInsertionPt(entryFunction);
+      dxilutil::FirstNonAllocaInsertionPt(function);
   IRBuilder<> Builder(firstInsertionPt);
 
   LLVMContext &Ctx = M.getContext();
@@ -1033,7 +1034,7 @@ bool DxilDebugInstrumentation::RunOnFunction(
   BuilderContext BC{M, DM, Ctx, HlslOP, Builder};
 
   m_HandleForUAV =
-      PIXPassHelpers::CreateUAV(BC.DM, BC.Builder, 0, "PIX_DebugUAV_Handle");
+      PIXPassHelpers::CreateUAV(BC.DM, PIXStructType, BC.Builder, 0, "PIX_DebugUAV_Handle");
 
   auto SystemValues = addRequiredSystemValues(BC, shaderKind);
   addInvocationSelectionProlog(BC, SystemValues, shaderKind);
@@ -1043,7 +1044,7 @@ bool DxilDebugInstrumentation::RunOnFunction(
   // purposes
   int NewBlockCounter = 0;
 
-  auto &Blocks = entryFunction->getBasicBlockList();
+  auto &Blocks = function->getBasicBlockList();
   for (auto &CurrentBlock : Blocks) {
     struct ValueAndPhi {
       Value *Val;
