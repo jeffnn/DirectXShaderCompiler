@@ -122,6 +122,10 @@ private:
                                SourceRange rangeOverride = {});
   SpirvInstruction *doCompoundAssignOperator(const CompoundAssignOperator *);
   SpirvInstruction *doConditionalOperator(const ConditionalOperator *expr);
+  SpirvInstruction *doConditional(const Expr *expr, const Expr *cond,
+                                  const Expr *falseExpr, const Expr *trueExpr);
+  SpirvInstruction *
+  doShortCircuitedConditionalOperator(const ConditionalOperator *expr);
   SpirvInstruction *doCXXMemberCallExpr(const CXXMemberCallExpr *expr);
   SpirvInstruction *doCXXOperatorCallExpr(const CXXOperatorCallExpr *expr,
                                           SourceRange rangeOverride = {});
@@ -222,6 +226,13 @@ private:
   ///   the original vector, no shuffling needed).
   bool isVectorShuffle(const Expr *expr);
 
+  /// Returns true if the given expression is a short-circuited operator.
+  bool isShortCircuitedOp(const Expr *expr);
+
+  /// Returns true if the given statement or any of its children are a
+  /// short-circuited operator.
+  bool stmtTreeContainsShortCircuitedOp(const Stmt *stmt);
+
   /// \brief Returns true if the given CXXOperatorCallExpr is indexing into a
   /// Buffer/RWBuffer/Texture/RWTexture using operator[].
   /// On success, writes the base buffer into *base if base is not nullptr, and
@@ -286,14 +297,14 @@ private:
   /// are generated.
   SpirvInstruction *tryToAssignToVectorElements(const Expr *lhs,
                                                 SpirvInstruction *rhs,
-	                                            SourceRange range = {});
+                                                SourceRange range = {});
 
   /// Tries to emit instructions for assigning to the given matrix element
   /// accessing expression. Returns 0 if the trial fails and no instructions
   /// are generated.
   SpirvInstruction *tryToAssignToMatrixElements(const Expr *lhs,
                                                 SpirvInstruction *rhs,
-	                                            SourceRange range = {});
+                                                SourceRange range = {});
 
   /// Tries to emit instructions for assigning to the given RWBuffer/RWTexture
   /// object. Returns 0 if the trial fails and no instructions are generated.
@@ -622,12 +633,33 @@ private:
       SourceLocation loc);
   /// Process spirv intrinsic instruction
   SpirvInstruction *processSpvIntrinsicCallExpr(const CallExpr *expr);
-  
+
   /// Process spirv intrinsic type definition
   SpirvInstruction *processSpvIntrinsicTypeDef(const CallExpr *expr);
 
-  /// Custom intrinsic to support basic buffer_reference use case
+  /// Process `T vk::RawBufferLoad<T>(in uint64_t address
+  /// [, in uint alignment])` that loads data from a given device address.
   SpirvInstruction *processRawBufferLoad(const CallExpr *callExpr);
+  SpirvInstruction *loadDataFromRawAddress(SpirvInstruction *addressInUInt64,
+                                           QualType bufferType,
+                                           uint32_t alignment,
+                                           SourceLocation loc);
+
+  /// Process `void vk::RawBufferStore<T>(in uint64_t address, in T value
+  /// [, in uint alignment])` that stores data to a given device address.
+  SpirvInstruction *processRawBufferStore(const CallExpr *callExpr);
+  SpirvInstruction *storeDataToRawAddress(SpirvInstruction *addressInUInt64,
+                                          SpirvInstruction *value,
+                                          QualType bufferType,
+                                          uint32_t alignment,
+                                          SourceLocation loc);
+
+  /// Returns the alignment of `vk::RawBufferLoad()`.
+  uint32_t getAlignmentForRawBufferLoad(const CallExpr *callExpr);
+
+  /// Returns the alignment of `vk::RawBufferStore()`.
+  uint32_t getAlignmentForRawBufferStore(const CallExpr *callExpr);
+
   /// Process vk::ext_execution_mode intrinsic
   SpirvInstruction *processIntrinsicExecutionMode(const CallExpr *expr,
                                                   bool useIdParams);
@@ -717,6 +749,7 @@ private:
   spv::LoopControlMask translateLoopAttribute(const Stmt *, const Attr &);
 
   static hlsl::ShaderModel::Kind getShaderModelKind(StringRef stageName);
+  static spv::ExecutionModel getSpirvShaderStage(hlsl::ShaderModel::Kind smk, bool);
 
   /// \brief Adds necessary execution modes for the hull/domain shaders based on
   /// the HLSL attributes of the entry point function.
@@ -758,7 +791,8 @@ private:
   /// The wrapper function is also responsible for initializing global static
   /// variables for some cases.
   bool emitEntryFunctionWrapper(const FunctionDecl *entryFunction,
-                                SpirvFunction *entryFuncId);
+                                SpirvFunction *entryFuncId,
+                                SpirvDebugFunction *debugFunction);
 
   /// \brief Emits a wrapper function for the entry functions for raytracing
   /// stages and returns true on success.
@@ -768,7 +802,8 @@ private:
   /// The wrapper function is also responsible for initializing global static
   /// variables for some cases.
   bool emitEntryFunctionWrapperForRayTracing(const FunctionDecl *entryFunction,
-                                             SpirvFunction *entryFuncId);
+                                             SpirvFunction *entryFuncId,
+                                             SpirvDebugFunction *debugFunction);
 
   /// \brief Performs the following operations for the Hull shader:
   /// * Creates an output variable which is an Array containing results for all
@@ -1155,7 +1190,7 @@ private:
 
   /// \brief Entry function name, derived from the command line
   /// and should be const.
-  const llvm::StringRef entryFunctionName;
+  const llvm::StringRef hlslEntryFunctionName;
 
   /// \brief Structure to maintain record of all entry functions and any
   /// reachable functions.
@@ -1184,6 +1219,9 @@ private:
 
   /// A queue of FunctionInfo reachable from all the entry functions.
   std::vector<const FunctionInfo *> workQueue;
+
+  /// Get SPIR-V entrypoint name for the given FunctionInfo.
+  llvm::StringRef getEntryPointName(const FunctionInfo *entryInfo);
 
   /// <result-id> for the entry function. Initially it is zero and will be reset
   /// when starting to translate the entry function.

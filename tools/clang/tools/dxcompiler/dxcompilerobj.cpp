@@ -728,6 +728,7 @@ public:
         PreprocessArgs.reserve(argCount + 1);
         PreprocessArgs.assign(pArguments, pArguments + argCount);
         PreprocessArgs.push_back(L"-P");
+        PreprocessArgs.push_back(L"-Fi");
         PreprocessArgs.push_back(L"preprocessed.hlsl");
         IFT(Compile(pSource, PreprocessArgs.data(), PreprocessArgs.size(), pIncludeHandler, IID_PPV_ARGS(&pSrcCodeResult)));
         HRESULT status;
@@ -1018,10 +1019,16 @@ public:
         opts.SpirvOptions.codeGenHighLevel = opts.CodeGenHighLevel;
         opts.SpirvOptions.defaultRowMajor = opts.DefaultRowMajor;
         opts.SpirvOptions.disableValidation = opts.DisableValidation;
-        // Store a string representation of command line options.
-        if (opts.DebugInfo)
-          for (auto opt : mainArgs.getArrayRef())
-            opts.SpirvOptions.clOptions += " " + std::string(opt);
+        // Save a string representation of command line options and
+        // input file name.
+        if (opts.DebugInfo) {
+          opts.SpirvOptions.inputFile = opts.InputFile;
+          for (auto opt : mainArgs.getArrayRef()) {
+            if (opts.InputFile.compare(opt) != 0) {
+              opts.SpirvOptions.clOptions += " " + std::string(opt);
+            }
+          }
+        }
 
         compiler.getCodeGenOpts().SpirvOptions = opts.SpirvOptions;
         clang::EmitSpirvAction action;
@@ -1416,7 +1423,7 @@ public:
       // TODO: consider
       // DebugPass, DebugCompilationDir, DwarfDebugFlags, SplitDwarfFile
     }
-    else {
+    else if (!Opts.ForceDisableLocTracking) {
       CodeGenOptions &CGOpts = compiler.getCodeGenOpts();
       CGOpts.setDebugInfo(CodeGenOptions::LocTrackingOnly);
       CGOpts.DebugColumnInfo = 1;
@@ -1759,7 +1766,7 @@ HRESULT DxcCompilerAdapter::WrapCompile(
       pSourceName, pEntryPoint, pTargetProfile,
       pArguments, argCount, pDefines, defineCount, &pArgs));
 
-    LPCWSTR PreprocessArgs[] = { L"-P", L"preprocessed.hlsl" };
+    LPCWSTR PreprocessArgs[] = {L"-P", L"-Fi", L"preprocessed.hlsl"};
     if (bPreprocess) {
       IFT(pArgs->AddArguments(PreprocessArgs, _countof(PreprocessArgs)));
     }

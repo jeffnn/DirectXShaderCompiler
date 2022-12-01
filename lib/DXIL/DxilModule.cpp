@@ -96,29 +96,11 @@ void ClearDxilHook(Module &M);
 //  DxilModule methods.
 //
 DxilModule::DxilModule(Module *pModule)
-: m_StreamPrimitiveTopology(DXIL::PrimitiveTopology::Undefined)
-, m_ActiveStreamMask(0)
-, m_Ctx(pModule->getContext())
+: m_Ctx(pModule->getContext())
 , m_pModule(pModule)
-, m_pEntryFunc(nullptr)
-, m_EntryName("")
 , m_pMDHelper(make_unique<DxilMDHelper>(pModule, make_unique<DxilExtraPropertyHelper>(pModule)))
-, m_pDebugInfoFinder(nullptr)
-, m_pSM(nullptr)
-, m_DxilMajor(DXIL::kDxilMajor)
-, m_DxilMinor(DXIL::kDxilMinor)
-, m_ValMajor(1)
-, m_ValMinor(0)
-, m_ForceZeroStoreLifetimes(false)
 , m_pOP(make_unique<OP>(pModule->getContext(), pModule))
 , m_pTypeSystem(make_unique<DxilTypeSystem>(pModule))
-, m_bDisableOptimizations(false)
-, m_bUseMinPrecision(true) // use min precision by default
-, m_bAllResourcesBound(false)
-, m_IntermediateFlags(0)
-, m_AutoBindingSpace(UINT_MAX)
-, m_pSubobjects(nullptr)
-, m_bMetadataErrors(false)
 {
 
   DXASSERT_NOMSG(m_pModule != nullptr);
@@ -932,16 +914,6 @@ const DxilResource &DxilModule::GetUAV(unsigned idx) const {
 
 const vector<unique_ptr<DxilResource> > &DxilModule::GetUAVs() const {
   return m_UAVs;
-}
-
-void DxilModule::LoadDxilResourceBaseFromMDNode(MDNode *MD, DxilResourceBase &R) {
-  return m_pMDHelper->LoadDxilResourceBaseFromMDNode(MD, R);
-}
-void DxilModule::LoadDxilResourceFromMDNode(llvm::MDNode *MD, DxilResource &R) {
-  return m_pMDHelper->LoadDxilResourceFromMDNode(MD, R);
-}
-void DxilModule::LoadDxilSamplerFromMDNode(llvm::MDNode *MD, DxilSampler &S) {
-  return m_pMDHelper->LoadDxilSamplerFromMDNode(MD, S);
 }
 
 template <typename TResource>
@@ -1851,6 +1823,55 @@ bool DxilModule::StripReflection() {
 
   return bChanged;
 }
+
+static void RemoveTypesFromSet(Type *Ty, SetVector<const StructType*> &typeSet) {
+  if (Ty->isPointerTy())
+    Ty = Ty->getPointerElementType();
+  while (Ty->isArrayTy())
+    Ty = Ty->getArrayElementType();
+  if (StructType *ST = dyn_cast<StructType>(Ty)) {
+    if (typeSet.count(ST)) {
+      typeSet.remove(ST);
+      for (unsigned i = 0; i < ST->getNumElements(); i++) {
+        RemoveTypesFromSet(ST->getElementType(i), typeSet);
+      }
+    }
+  }
+}
+
+template <typename TResource>
+static void
+RemoveUsedTypesFromSet(std::vector<std::unique_ptr<TResource>> &vec, SetVector<const StructType*> &typeSet) {
+  for (auto &p : vec) {
+    RemoveTypesFromSet(p->GetHLSLType(), typeSet);
+  }
+}
+
+void DxilModule::RemoveUnusedTypeAnnotations() {
+  // Collect annotated types
+  const DxilTypeSystem::StructAnnotationMap &SAMap = m_pTypeSystem->GetStructAnnotationMap();
+  SetVector<const StructType*> types;
+  for (const auto &it : SAMap)
+    types.insert(it.first);
+
+  // Iterate resource types and remove any HLSL types from set
+  RemoveUsedTypesFromSet(m_CBuffers, types);
+  RemoveUsedTypesFromSet(m_UAVs, types);
+  RemoveUsedTypesFromSet(m_SRVs, types);
+
+  // Iterate Function parameters and return types, removing any HLSL types found from set
+  for (Function &F : m_pModule->functions()) {
+    FunctionType *FT = F.getFunctionType();
+    RemoveTypesFromSet(FT->getReturnType(), types);
+    for (Type *PTy : FT->params())
+      RemoveTypesFromSet(PTy, types);
+  }
+
+  // Remove remaining set of types
+  for (const StructType *ST : types)
+    m_pTypeSystem->EraseStructAnnotation(ST);
+}
+
 
 void DxilModule::LoadDxilResources(const llvm::MDOperand &MDO) {
   if (MDO.get() == nullptr)

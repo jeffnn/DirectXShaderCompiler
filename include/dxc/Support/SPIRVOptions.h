@@ -56,11 +56,13 @@ struct SpirvCodeGenOptions {
   bool noWarnIgnoredFeatures;
   bool useDxLayout;
   bool useGlLayout;
+  bool useLegacyBufferMatrixOrder;
   bool useScalarLayout;
   bool flattenResourceArrays;
   bool reduceLoadSize;
   bool autoShiftBindings;
   bool supportNonzeroBaseInstance;
+  bool fixFuncCallArguments;
   /// Maximum length in words for the OpString literal containing the shader
   /// source for DebugSource and DebugSourceContinued. If the source code length
   /// is larger than this number, we will use DebugSourceContinued instructions
@@ -84,11 +86,15 @@ struct SpirvCodeGenOptions {
   llvm::SmallVector<llvm::StringRef, 4> optConfig;
   std::vector<std::string> bindRegister;
   std::vector<std::string> bindGlobals;
+  std::string entrypointName;
 
   bool signaturePacking; ///< Whether signature packing is enabled or not
 
-  // String representation of all command line options.
+  bool printAll; // Dump SPIR-V module before each pass and after the last one.
+
+  // String representation of all command line options and input file.
   std::string clOptions;
+  std::string inputFile;
 };
 
 } // namespace spirv

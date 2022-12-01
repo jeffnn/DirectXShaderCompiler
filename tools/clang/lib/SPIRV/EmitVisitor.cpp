@@ -32,7 +32,7 @@ static const uint32_t kMaximumCharOpSource = 0xFFFA;
 static const uint32_t kMaximumCharOpSourceContinued = 0xFFFD;
 
 // Since OpSource does not have a result id, this is used to mark it was emitted
-static const uint32_t kEmittedSourceForOpSource = 1; 
+static const uint32_t kEmittedSourceForOpSource = 1;
 
 /// Chops the given original string into multiple smaller ones to make sure they
 /// can be encoded in a sequence of OpSourceContinued instructions following an
@@ -319,7 +319,7 @@ void EmitVisitor::emitDebugLine(spv::Op op, const SourceLocation &loc,
   }
 
   auto fileId = debugMainFileId;
-  const auto &sm = astContext->getSourceManager();
+  const auto &sm = astContext.getSourceManager();
   const char *fileName = sm.getPresumedLoc(loc).getFilename();
   if (fileName)
     fileId = getOrCreateOpStringId(fileName);
@@ -1317,8 +1317,15 @@ bool EmitVisitor::visit(SpirvStore *inst) {
   initInstruction(inst);
   curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getPointer()));
   curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getObject()));
-  if (inst->hasMemoryAccessSemantics())
-    curInst.push_back(static_cast<uint32_t>(inst->getMemoryAccess()));
+  if (inst->hasMemoryAccessSemantics()) {
+    spv::MemoryAccessMask memoryAccess = inst->getMemoryAccess();
+    curInst.push_back(static_cast<uint32_t>(memoryAccess));
+    if (inst->hasAlignment()) {
+      assert(static_cast<uint32_t>(memoryAccess) &
+             static_cast<uint32_t>(spv::MemoryAccessMask::Aligned));
+      curInst.push_back(inst->getAlignment());
+    }
+  }
   finalizeInstruction(&mainBinary);
   return true;
 }
@@ -1427,13 +1434,15 @@ void EmitVisitor::generateDebugSourceContinued(uint32_t textId,
   finalizeInstruction(&richDebugInfo);
 }
 
-void EmitVisitor::generateChoppedSource(uint32_t fileId, SpirvDebugSource *inst) {
+void EmitVisitor::generateChoppedSource(uint32_t fileId,
+                                        SpirvDebugSource *inst) {
   // Chop up the source into multiple segments if it is too long.
   llvm::SmallVector<std::string, 2> choppedSrcCode;
-  std::string text;
   uint32_t textId = 0;
   if (spvOptions.debugInfoSource) {
-    text = ReadSourceCode(inst->getFile());
+    std::string text = inst->getContent();
+    if (text.empty())
+      text = ReadSourceCode(inst->getFile());
     if (!text.empty()) {
       // Maximum characters for DebugSource and DebugSourceContinued
       // OpString literal minus terminating null.
@@ -1612,6 +1621,25 @@ bool EmitVisitor::visit(SpirvDebugFunctionDefinition *inst) {
   curInst.push_back(
       getOrAssignResultId<SpirvInstruction>(inst->getDebugFunction()));
   curInst.push_back(getOrAssignResultId<SpirvFunction>(inst->getFunction()));
+  finalizeInstruction(&mainBinary);
+  return true;
+}
+
+bool EmitVisitor::visit(SpirvDebugEntryPoint *inst) {
+  uint32_t sigId = getOrCreateOpStringId(inst->getSignature());
+  uint32_t argId = getOrCreateOpStringId(inst->getArgs());
+  initInstruction(inst);
+  curInst.push_back(inst->getResultTypeId());
+  curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst));
+  curInst.push_back(
+      getOrAssignResultId<SpirvInstruction>(inst->getInstructionSet()));
+  curInst.push_back(inst->getDebugOpcode());
+  curInst.push_back(
+      getOrAssignResultId<SpirvInstruction>(inst->getEntryPoint()));
+  curInst.push_back(
+      getOrAssignResultId<SpirvInstruction>(inst->getCompilationUnit()));
+  curInst.push_back(sigId);
+  curInst.push_back(argId);
   finalizeInstruction(&mainBinary);
   return true;
 }
@@ -1933,6 +1961,30 @@ bool EmitVisitor::visit(SpirvIntrinsicInstruction *inst) {
   return true;
 }
 
+bool EmitVisitor::visit(SpirvEmitMeshTasksEXT *inst) { 
+  initInstruction(inst);
+
+  curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getXDimension()));
+  curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getYDimension()));
+  curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getZDimension()));
+  if (inst->getPayload() != nullptr)
+  {
+      curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getPayload()));
+  }
+
+  finalizeInstruction(&mainBinary);
+  return true;
+}
+bool EmitVisitor::visit(SpirvSetMeshOutputsEXT *inst) {
+  initInstruction(inst);
+
+  curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getVertexCount()));
+  curInst.push_back(getOrAssignResultId<SpirvInstruction>(inst->getPrimitiveCount()));
+
+  finalizeInstruction(&mainBinary);
+  return true;
+}
+
 // EmitTypeHandler ------
 
 void EmitTypeHandler::initTypeInstruction(spv::Op op) {
@@ -2050,9 +2102,9 @@ uint32_t EmitTypeHandler::getOrCreateConstantFloat(SpirvConstantFloat *inst) {
   if (valueBitwidth != typeBitwidth) {
     bool losesInfo = false;
     const llvm::fltSemantics &targetSemantics =
-        typeBitwidth == 16 ? llvm::APFloat::IEEEhalf
-                           : typeBitwidth == 32 ? llvm::APFloat::IEEEsingle
-                                                : llvm::APFloat::IEEEdouble;
+        typeBitwidth == 16   ? llvm::APFloat::IEEEhalf
+        : typeBitwidth == 32 ? llvm::APFloat::IEEEsingle
+                             : llvm::APFloat::IEEEdouble;
     const auto status = valueToUse.convert(
         targetSemantics, llvm::APFloat::roundingMode::rmTowardZero, &losesInfo);
     if (status != llvm::APFloat::opStatus::opOK &&

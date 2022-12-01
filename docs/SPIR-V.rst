@@ -288,13 +288,15 @@ Supported extensions
 
 * SPV_KHR_16bit_storage
 * SPV_KHR_device_group
+* SPV_KHR_fragment_shading_rate
 * SPV_KHR_multivew
 * SPV_KHR_post_depth_coverage
 * SPV_KHR_shader_draw_parameters
 * SPV_EXT_descriptor_indexing
 * SPV_EXT_fragment_fully_covered
-* SPV_KHR_fragment_shading_rate
+* SPV_EXT_mesh_shader
 * SPV_EXT_shader_stencil_support
+* SPV_AMD_shader_early_and_late_fragment_tests
 * SPV_AMD_shader_explicit_vertex_parameter
 * SPV_GOOGLE_hlsl_functionality1
 * SPV_GOOGLE_user_type
@@ -340,6 +342,40 @@ The namespace ``vk`` will be used for all Vulkan attributes:
   sampler (or sampled image) type with the same descriptor set and binding numbers (see
   `wiki page <https://github.com/microsoft/DirectXShaderCompiler/wiki/Vulkan-combined-image-sampler-type>`_
   for more detail).
+- ``early_and_late_tests``: Marks an entry point as enabling early and late depth
+  tests. If depth is written via ``SV_Depth``, ``depth_unchanged`` must also be specified
+  (``SV_DepthLess`` and ``SV_DepthGreater`` can be written freely). If a stencil reference
+  value is written via ``SV_StencilRef``, one of ``stencil_ref_unchanged_front``,
+  ``stencil_ref_greater_equal_front``, or ``stencil_ref_less_equal_front`` and
+  one of ``stencil_ref_unchanged_back``, ``stencil_ref_greater_equal_back``, or
+  ``stencil_ref_less_equal_back`` must be specified.
+- ``depth_unchanged``: Specifies that any depth written to ``SV_Depth`` will not
+  invalidate the result of early depth tests. Sets the ``DepthUnchanged`` execution
+  mode in SPIR-V. Only valid on pixel shader entry points.
+- ``stencil_ref_unchanged_front``: Specifies that any stencil ref written to
+  ``SV_StencilRef`` will not invalidate the result of early stencil tests when
+  the fragment is front facing. Sets the ``StencilRefUnchangedFrontAMD`` execution
+  mode in SPIR-V. Only valid on pixel shader entry points.
+- ``stencil_ref_greater_equal_front``: Specifies that any stencil ref written to
+  ``SV_StencilRef`` will be greater than or equal to the stencil reference value
+  set by the API when the fragment is front facing. Sets the ``StencilRefGreaterFrontAMD``
+  execution mode in SPIR-V. Only valid on pixel shader entry points.
+- ``stencil_ref_less_equal_front``: Specifies that any stencil ref written to
+  ``SV_StencilRef`` will be less than or equal to the stencil reference value
+  set by the API when the fragment is front facing. Sets the ``StencilRefLessFrontAMD``
+  execution mode in SPIR-V. Only valid on pixel shader entry points.
+- ``stencil_ref_unchanged_back``: Specifies that any stencil ref written to
+  ``SV_StencilRef`` will not invalidate the result of early stencil tests when
+  the fragment is back facing. Sets the ``StencilRefUnchangedBackAMD`` execution
+  mode in SPIR-V. Only valid on pixel shader entry points.
+- ``stencil_ref_greater_equal_back``: Specifies that any stencil ref written to
+  ``SV_StencilRef`` will be greater than or equal to the stencil reference value
+  set by the API when the fragment is back facing. Sets the ``StencilRefGreaterBackAMD``
+  execution mode in SPIR-V. Only valid on pixel shader entry points.
+- ``stencil_ref_less_equal_back``: Specifies that any stencil ref written to
+  ``SV_StencilRef`` will be less than or equal to the stencil reference value
+  set by the API when the fragment is back facing. Sets the ``StencilRefLessBackAMD``
+  execution mode in SPIR-V. Only valid on pixel shader entry points.
 
 Only ``vk::`` attributes in the above list are supported. Other attributes will
 result in warnings and be ignored by the compiler. All C++11 attributes will
@@ -544,10 +580,15 @@ information, you can use ``-fspv-debug=``. It accepts:
 * ``line``: for emitting line information (turns on ``source`` implicitly)
 * ``tool``: for emitting DXC Git commit hash and command-line options
 
-``-fspv-debug=`` overrules ``-Zi``. And you can provide multiple instances of
-``-fspv-debug=``. For example, you can use ``-fspv-debug=file -fspv-debug=tool``
-to turn on emitting file path and DXC information; source code and line
-information will not be emitted.
+These ``-fspv-debug=`` options overrule ``-Zi``. And you can provide multiple
+instances of ``-fspv-debug=``. For example, you can use ``-fspv-debug=file
+-fspv-debug=tool`` to turn on emitting file path and DXC information; source
+code and line information will not be emitted.
+
+If you want to generate `NonSemantic.Shader.DebugInfo.100 <http://htmlpreview.github.io/?https://github.com/KhronosGroup/SPIRV-Registry/blob/main/nonsemantic/NonSemantic.Shader.DebugInfo.100.html>`_ extended instructions, you can use
+``-fspv-debug=vulkan-with-source``. These instructions support source-level
+shader debugging with tools such as RenderDoc, even if the SPIR-V is optimized.
+This option overrules the other ``-fspv-debug`` options above.
 
 Reflection
 ----------
@@ -837,6 +878,7 @@ SPIR-V, we introduce ``[[vk::image_format("FORMAT")]]`` attribute for texture ty
 For example,
 
 .. code:: hlsl
+
   [[vk::image_format("rgba8")]]
   RWBuffer<float4> Buf;
 
@@ -1486,13 +1528,15 @@ some system-value (SV) semantic strings will be translated into SPIR-V
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | DsIn        | ``PrimitiveId``                        | N/A                   | ``Tessellation``            |
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
-| SV_PrimitiveID            | GSIn        | ``PrimitiveId``                        | N/A                   | ``Geometry``                |
-|                           +-------------+----------------------------------------+-----------------------+-----------------------------+
+|                           | GSIn        | ``PrimitiveId``                        | N/A                   | ``Geometry``                |
+| SV_PrimitiveID            +-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | GSOut       | ``PrimitiveId``                        | N/A                   | ``Geometry``                |
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | PSIn        | ``PrimitiveId``                        | N/A                   | ``Geometry``                |
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
-|                           | MSOut       | ``PrimitiveId``                        | N/A                   | ``MeshShadingNV``           |
+|                           |             |                                        |                       | ``MeshShadingNV``           |
+|                           | MSOut       | ``PrimitiveId``                        | N/A                   |                             |
+|                           |             |                                        |                       | ``MeshShadingEXT``          |
 +---------------------------+-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | PCOut       | ``TessLevelOuter``                     | N/A                   | ``Tessellation``            |
 | SV_TessFactor             +-------------+----------------------------------------+-----------------------+-----------------------------+
@@ -1510,15 +1554,19 @@ some system-value (SV) semantic strings will be translated into SPIR-V
 +---------------------------+-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | GSOut       | ``Layer``                              | N/A                   | ``Geometry``                |
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
-| SV_RenderTargetArrayIndex | PSIn        | ``Layer``                              | N/A                   | ``Geometry``                |
-|                           +-------------+----------------------------------------+-----------------------+-----------------------------+
-|                           | MSOut       | ``Layer``                              | N/A                   | ``MeshShadingNV``           |
+|                           | PSIn        | ``Layer``                              | N/A                   | ``Geometry``                |
+| SV_RenderTargetArrayIndex +-------------+----------------------------------------+-----------------------+-----------------------------+
+|                           |             |                                        |                       | ``MeshShadingNV``           |
+|                           | MSOut       | ``Layer``                              | N/A                   |                             |
+|                           |             |                                        |                       | ``MeshShadingEXT``          |
 +---------------------------+-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | GSOut       | ``ViewportIndex``                      | N/A                   | ``MultiViewport``           |
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
-| SV_ViewportArrayIndex     | PSIn        | ``ViewportIndex``                      | N/A                   | ``MultiViewport``           |
-|                           +-------------+----------------------------------------+-----------------------+-----------------------------+
-|                           | MSOut       | ``ViewportIndex``                      | N/A                   | ``MeshShadingNV``           |
+|                           | PSIn        | ``ViewportIndex``                      | N/A                   | ``MultiViewport``           |
+| SV_ViewportArrayIndex     +-------------+----------------------------------------+-----------------------+-----------------------------+
+|                           |             |                                        |                       | ``MeshShadingNV``           |
+|                           | MSOut       | ``ViewportIndex``                      | N/A                   |                             |
+|                           |             |                                        |                       | ``MeshShadingEXT``          |
 +---------------------------+-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | PSIn        | ``SampleMask``                         | N/A                   | ``Shader``                  |
 | SV_Coverage               +-------------+----------------------------------------+-----------------------+-----------------------------+
@@ -1546,6 +1594,9 @@ some system-value (SV) semantic strings will be translated into SPIR-V
 |                           +-------------+----------------------------------------+-----------------------+-----------------------------+
 |                           | MSOut       | ``PrimitiveShadingRateKHR``            | N/A                   | ``FragmentShadingRate``     |
 +---------------------------+-------------+----------------------------------------+-----------------------+-----------------------------+
+| SV_CullPrimitive          | MSOut       | ``CullPrimitiveEXT``                   | N/A                   | ``MeshShadingEXT ``         |
++---------------------------+-------------+----------------------------------------+-----------------------+-----------------------------+
+
 
 For entities (function parameters, function return values, struct fields) with
 the above SV semantic strings attached, SPIR-V variables of the
@@ -1720,6 +1771,7 @@ variable with the struct type.
 For example, the binding numbers for the following resources and cbuffers
 
 .. code:: hlsl
+
   cbuffer buf0 : register(b0) {
     float4 non_resource0;
   };
@@ -2357,14 +2409,14 @@ HLSL Intrinsic Function   GLSL Extended Instruction
 ``log10``               ``Log2`` (scaled by ``1/log2(10)``)
 ``log2``                ``Log2``
 ``mad``                 ``Fma``
-``max``                 ``SMax``/``UMax``/``FMax``
-``min``                 ``SMin``/``UMin``/``FMin``
+``max``                 ``SMax``/``UMax``/``NMax``
+``min``                 ``SMin``/``UMin``/``NMin``
 ``modf``                ``ModfStruct``
 ``normalize``           ``Normalize``
 ``pow``                 ``Pow``
 ``reflect``             ``Reflect``
 ``refract``             ``Refract``
-``round``               ``Round``
+``round``               ``RoundEven``
 ``rsqrt``               ``InverseSqrt``
 ``saturate``            ``FClamp``
 ``sign``                ``SSign``/``FSign``
@@ -3372,26 +3424,34 @@ shaders and are translated to SPIR-V execution modes according to the table belo
 
 .. table:: Mapping from HLSL attribute to SPIR-V execution mode
 
-+-------------------+--------------------+-------------------------+
-|  HLSL Attribute   |   Value            | SPIR-V Execution Mode   |
-+===================+====================+=========================+
-|``outputtopology`` | ``point``          | ``OutputPoints``        |
-|                   +--------------------+-------------------------+
-|``(Mesh shader)``  | ``line``           | ``OutputLinesNV``       |
-|                   +--------------------+-------------------------+
-|                   | ``triangle``       | ``OutputTrianglesNV``   |
-+-------------------+--------------------+-------------------------+
-| ``numthreads``    | ``X, Y, Z``        | ``LocalSize X, Y, Z``   |
-|                   |                    |                         |
-|                   | ``(X*Y*Z <= 128)`` |                         |
-+-------------------+--------------------+-------------------------+
++-----------------------+--------------------+-------------------------+
+|  HLSL Attribute       |   Value            | SPIR-V Execution Mode   |
++=======================+====================+=========================+
+|``outputtopology``     | ``point``          | ``OutputPoints``        |
+|                       +--------------------+-------------------------+
+| (SPV_NV_mesh_shader)  | ``line``           | ``OutputLinesNV``       |
+|                       |                    |                         |
+|                       +--------------------+-------------------------+
+|                       | ``triangle``       | ``OutputTrianglesNV``   |
++-----------------------+--------------------+-------------------------+
+|``outputtopology``     | ``point``          | ``OutputPoints``        |
+|                       +--------------------+-------------------------+
+| (SPV_EXT_mesh_shader) | ``line``           | ``OutputLinesEXT``      |
+|                       |                    |                         |
+|                       +--------------------+-------------------------+
+|                       | ``triangle``       | ``OutputTrianglesEXT``  |
++-----------------------+--------------------+-------------------------+
+| ``numthreads``        | ``X, Y, Z``        | ``LocalSize X, Y, Z``   |
+|                       |                    |                         |
+|                       | ``(X*Y*Z <= 128)`` |                         |
++-----------------------+--------------------+-------------------------+
 
 Intrinsics
 ~~~~~~~~~~
 The following HLSL intrinsics are used in Mesh or Amplification shaders
 and are translated to SPIR-V intrinsics according to the table below:
 
-.. table:: Mapping from HLSL intrinsics to SPIR-V intrinsics
+.. table:: Mapping from HLSL intrinsics to SPIR-V intrinsics for SPV_NV_mesh_shader
 
 +---------------------------+--------------------+-----------------------------------------+
 |  HLSL Intrinsic           |  Parameters        | SPIR-V Intrinsic                        |
@@ -3408,6 +3468,24 @@ and are translated to SPIR-V intrinsics according to the table below:
 |                           |                    |                                         |
 |                           | ``MeshPayload``    |                                         |
 +---------------------------+--------------------+-----------------------------------------+
+
+.. table:: Mapping from HLSL intrinsics to SPIR-V intrinsics for SPV_EXT_mesh_shader
+
++---------------------------+--------------------+--------------------------------------------------------------+
+|  HLSL Intrinsic           |  Parameters        | SPIR-V Intrinsic                                             |
++===========================+====================+==============================================================+
+| ``SetMeshOutputCounts``   | ``numVertices``    | ``OpSetMeshOutputsEXT``                                      |
+|                           |                    |                                                              |
+| ``(Mesh shader)``         | ``numPrimitives``  |                                                              |
++---------------------------+--------------------+--------------------------------------------------------------+
+| ``DispatchMesh``          | ``ThreadX``        | ``OpEmitMeshTasksEXT ThreadX ThreadY ThreadZ MeshPayload``   |
+|                           |                    |                                                              |
+| ``(Amplification shader)``| ``ThreadY``        | ``TaskCountNV ThreadX*ThreadY*ThreadZ``                      |
+|                           |                    |                                                              |
+|                           | ``ThreadZ``        |                                                              |
+|                           |                    |                                                              |
+|                           | ``MeshPayload``    |                                                              |
++---------------------------+--------------------+--------------------------------------------------------------+
 
 | Note : For ``DispatchMesh`` intrinsic, we also emit ``MeshPayload`` as output block with ``PerTaskNV`` decoration
 
@@ -3782,7 +3860,8 @@ implicit ``vk`` namepsace.
     const uint QueueFamilyScope = 5;
   
     uint64_t ReadClock(in uint scope);
-    uint     RawBufferLoad(in uint64_t deviceAddress);
+    T        RawBufferLoad<T = uint>(in uint64_t deviceAddress,
+                                     in uint alignment = 4);
   } // end namespace
 
 
@@ -3820,34 +3899,53 @@ For example:
 
   uint64_t clock = vk::ReadClock(vk::SubgroupScope);
 
-RawBufferLoad
-~~~~~~~~~~~~~
-This intrinsic funcion has the following signature:
+RawBufferLoad and RawBufferStore
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The Vulkan extension `VK_KHR_buffer_device_address <https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_buffer_device_address.html>`_
+supports getting the 64-bit address of a buffer and passing it to SPIR-V as a
+Uniform buffer. SPIR-V can use the address to load and store data without a descriptor.
+We add the following intrinsic functions to expose a subset of the
+`VK_KHR_buffer_device_address <https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_buffer_device_address.html>`_
+and `SPV_KHR_physical_storage_buffer <https://github.com/KhronosGroup/SPIRV-Registry/blob/main/extensions/KHR/SPV_KHR_physical_storage_buffer.asciidoc>`_
+functionality to HLSL:
 
 .. code:: hlsl
 
-  uint RawBufferLoad(in uint64_t deviceAddress);
+  // RawBufferLoad and RawBufferStore use 'uint' for the default template argument. 
+  // The default alignment is 4. Note that 'alignment' must be a constant integer.
+  T RawBufferLoad<T = uint>(in uint64_t deviceAddress, in uint alignment = 4);
+  void RawBufferStore<T = uint>(in uint64_t deviceAddress, in T value, in uint alignment = 4);
 
-This exposes a subset of the `VK_KHR_buffer_device_address <https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_buffer_device_address.html>`_
-and `SPV_KHR_physical_storage_buffer <https://github.com/KhronosGroup/SPIRV-Registry/blob/main/extensions/KHR/SPV_KHR_physical_storage_buffer.asciidoc>`_ 
-functionality to HLSL. 
 
-It allows the shader program to load a single 32 bit value from a GPU
-accessible memory at given address, similar to ``ByteAddressBuffer.Load()``.
-Like ``ByteAddressBuffer``, this intrinsic requires a 4 byte aligned address.
+These intrinsics allow the shader program to load and store a single value with type T (int, float2, struct, etc...) 
+from GPU accessible memory at given address, similar to ``ByteAddressBuffer.Load()``.
+Additionally, these intrinsics allow users to set the memory alignment for the underlying data. 
+We assume a 'uint' type when the template argument is missing, and we use a value of '4' for the default alignment. 
+Note that the alignment argument must be a constant integer if it is given.
 
-Using this intrinsic adds ``PhysicalStorageBufferAddresses`` capability and 
-``SPV_KHR_physical_storage_buffer`` extension requirements as well as changing 
+Though we do support setting the `alignment` of the data load and store, we do not currently 
+support setting the memory layout for the data. Since these intrinsics are supposed to load 
+"arbitrary" data to or from a random device address, we assume that the program loads/stores some "bytes of data",
+but that its format or layout is unknown. Therefore, keep in mind that these intrinsics
+load or store ``sizeof(T)`` bytes of data, and that loading/storing data with a struct
+with a custom memory alignment may yield undefined behavior due to the missing custom memory layout support.
+Loading data with customized memory layouts is future work.
+
+Using either of these intrinsics adds ``PhysicalStorageBufferAddresses`` capability and
+``SPV_KHR_physical_storage_buffer`` extension requirements as well as changing
 the addressing model to ``PhysicalStorageBuffer64``.
 
 Example:
 
 .. code:: hlsl
 
-  uint64_t Address;
-  float4 main() : SV_Target0 {
-    uint Value = vk::RawBufferLoad(Address);
-    return asfloat(Value);
+  uint64_t address;
+  [numthreads(32, 1, 1)]
+  void main(uint3 tid : SV_DispatchThreadID) {
+    double foo = vk::RawBufferLoad<double>(address, 8);
+    uint bar = vk::RawBufferLoad(address + 8);
+    ...
+    vk::RawBufferStore<uint>(address + tid.x, bar + tid.x);
   }
 
 Inline SPIR-V (HLSL version of GL_EXT_spirv_intrinsics)
@@ -3920,7 +4018,8 @@ codegen for Vulkan:
   option cannot be used together with other binding assignment options.
   It requires all source code resources have ``:register()`` attribute and
   all registers have corresponding Vulkan descriptors specified using this
-  option.
+  option. If the ``$Globals`` cbuffer resource is used, it must also be bound
+  with ``-fvk-bind-globals``.
 - ``-fvk-bind-globals N M``: Places the ``$Globals`` cbuffer at
   descriptor set #M and binding #N. See `HLSL global variables and Vulkan binding`_
   for explanation and examples.
@@ -3957,6 +4056,10 @@ codegen for Vulkan:
   SPIR-V backend. Also note that this requires the optimizer to be able to
   resolve all array accesses with constant indeces. Therefore, all loops using
   the resource arrays must be marked with ``[unroll]``.
+- ``-fspv-entrypoint-name=<name>``: Specify the SPIR-V entry point name. Defaults
+  to the HLSL entry point name.
+- ``-fspv-use-legacy-buffer-matrix-order``: Assumes the legacy matrix order (row
+  major) when accessing raw buffers (e.g., ByteAdddressBuffer).
 - ``-Wno-vk-ignored-features``: Does not emit warnings on ignored features
   resulting from no Vulkan support, e.g., cbuffer member initializer.
 

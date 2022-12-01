@@ -247,7 +247,7 @@ void DxbcConverter::ConvertImpl(_In_reads_bytes_(DxbcSize) LPCVOID pDxbc,
 
   // Wrap LLVM module in a DXBC container.
   size_t DXILSize = DxilBuffer.size_in_bytes();
-  DxilContainerWriter *pContainerWriter = hlsl::NewDxilContainerWriter();
+  std::unique_ptr<DxilContainerWriter> pContainerWriter(hlsl::NewDxilContainerWriter());
   pContainerWriter->AddPart(DXBC_DXIL, DXILSize, [=](AbstractMemoryStream *pStream) {
     WritePart(pStream, DxilBuffer);
   });
@@ -332,7 +332,7 @@ void DxbcConverter::ConvertImpl(_In_reads_bytes_(DxbcSize) LPCVOID pDxbc,
   CComPtr<AbstractMemoryStream> pOutputStream;
   IFT(CreateFixedSizeMemoryStream((LPBYTE)pOutput.m_pData, OutputSize, &pOutputStream));
   pContainerWriter->write(pOutputStream);
-  pOutputStream.Detach();
+  // pOutputStream does not own the buffer; allow CComPtr to clean up the stream object.
 
   *ppDxil = pOutput.Detach();
   *pDxilSize = OutputSize;
@@ -2127,9 +2127,9 @@ void DxbcConverter::ConvertInstructions(D3D10ShaderBinary::CShaderCodeParser &Pa
         unsigned Size = Inst.m_CustomData.DataSizeInBytes >> 2;
         DXASSERT_DXBC(m_pIcbGV == nullptr && Inst.m_CustomData.DataSizeInBytes == Size*4);
 
-        llvm::Constant *pIcbData = ConstantDataArray::get(m_Ctx, ArrayRef<float>((float*)Inst.m_CustomData.pData, Size));
+        llvm::Constant *pIcbData = ConstantDataArray::get(m_Ctx, ArrayRef<uint32_t>((uint32_t*)Inst.m_CustomData.pData, Size));
         m_pIcbGV = new GlobalVariable(*m_pModule, pIcbData->getType(), true, GlobalValue::InternalLinkage,
-                                      pIcbData, "dx.icb", nullptr, 
+                                      pIcbData, "dx.icb", nullptr,
                                       GlobalVariable::NotThreadLocal, DXIL::kImmediateCBufferAddrSpace);
       }
       break;
@@ -6074,7 +6074,7 @@ void DxbcConverter::LoadOperand(OperandValue &SrcVal,
         Value *pPtr = m_pBuilder->CreateGEP(m_pIcbGV, pGEPIndices);
         LoadInst *pLoad = m_pBuilder->CreateLoad(pPtr);
         pLoad->setAlignment(kRegCompAlignment);
-        Value *pValue = CastDxbcValue(pLoad, CompType::getF32(), ValueType);
+        Value *pValue = CastDxbcValue(pLoad, CompType::getU32(), ValueType);
         pValue = ApplyOperandModifiers(pValue, O);
       
         OVH.SetValue(pValue);

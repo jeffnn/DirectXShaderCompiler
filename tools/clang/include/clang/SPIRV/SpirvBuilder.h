@@ -52,8 +52,6 @@ class SpirvBuilder {
 public:
   SpirvBuilder(ASTContext &ac, SpirvContext &c, const SpirvCodeGenOptions &,
                FeatureManager &featureMgr);
-  SpirvBuilder(SpirvContext &c, const SpirvCodeGenOptions &,
-               FeatureManager &featureMgr);
   ~SpirvBuilder() = default;
 
   // Forbid copy construction and assignment
@@ -74,9 +72,6 @@ public:
   SpirvFunction *createSpirvFunction(QualType returnType, SourceLocation,
                                      llvm::StringRef name, bool isPrecise,
                                      bool isNoInline = false);
-  SpirvFunction *createSpirvFunction(const SpirvType *returnType,
-                                     SourceLocation, llvm::StringRef name,
-                                     bool isPrecise, bool isNoInline = false);
 
   /// \brief Begins building a SPIR-V function by allocating a SpirvFunction
   /// object. Returns the pointer for the function on success. Returns nullptr
@@ -84,10 +79,6 @@ public:
   ///
   /// At any time, there can only exist at most one function under building.
   SpirvFunction *beginFunction(QualType returnType, SourceLocation,
-                               llvm::StringRef name = "",
-                               bool isPrecise = false, bool isNoInline = false,
-                               SpirvFunction *func = nullptr);
-  SpirvFunction *beginFunction(const SpirvType *returnType, SourceLocation,
                                llvm::StringRef name = "",
                                bool isPrecise = false, bool isNoInline = false,
                                SpirvFunction *func = nullptr);
@@ -196,8 +187,8 @@ public:
                                     SpirvInstruction *pointer, SourceLocation);
 
   /// \brief Creates a store instruction storing the given value into the given
-  /// address.
-  void createStore(SpirvInstruction *address, SpirvInstruction *value,
+  /// address. Returns the instruction pointer for the store instruction.
+  SpirvStore *createStore(SpirvInstruction *address, SpirvInstruction *value,
                    SourceLocation loc, SourceRange range = {});
 
   /// \brief Creates a function call instruction and returns the instruction
@@ -468,6 +459,20 @@ public:
   /// \brief Creates an OpEndPrimitive instruction.
   void createEndPrimitive(SourceLocation, SourceRange range = {});
 
+  /// \brief Creates an OpEmitMeshTasksEXT instruction.
+  void createEmitMeshTasksEXT(SpirvInstruction* xDim,
+                              SpirvInstruction* yDim,
+                              SpirvInstruction* zDim,
+                              SourceLocation loc,
+                              SpirvInstruction *payload = nullptr,
+                              SourceRange range = {});
+
+  /// \brief Creates an OpSetMeshOutputsEXT instruction.
+  void createSetMeshOutputsEXT(SpirvInstruction* vertCount,
+                               SpirvInstruction* primCount,
+                               SourceLocation loc,
+                               SourceRange range = {});
+
   /// \brief Creates an OpArrayLength instruction.
   SpirvArrayLength *createArrayLength(QualType resultType, SourceLocation loc,
                                       SpirvInstruction *structure,
@@ -492,6 +497,10 @@ public:
                                       llvm::StringRef text = "");
 
   SpirvDebugCompilationUnit *createDebugCompilationUnit(SpirvDebugSource *);
+
+  void createDebugEntryPoint(SpirvDebugFunction *ep,
+                             SpirvDebugCompilationUnit *cu,
+                             llvm::StringRef signature, llvm::StringRef args);
 
   SpirvDebugLexicalBlock *
   createDebugLexicalBlock(SpirvDebugSource *, uint32_t line, uint32_t column,
@@ -614,20 +623,12 @@ public:
   SpirvVariable *addStageIOVar(QualType type, spv::StorageClass storageClass,
                                llvm::StringRef name, bool isPrecise,
                                SourceLocation loc);
-  SpirvVariable *addStageIOVar(const SpirvType *type,
-                               spv::StorageClass storageClass,
-                               llvm::StringRef name, bool isPrecise,
-                               SourceLocation loc);
 
   /// \brief Adds a stage builtin variable whose value is of the given type.
   ///
   /// Note: The corresponding pointer type of the given type will not be
   /// constructed in this method.
   SpirvVariable *addStageBuiltinVar(QualType type,
-                                    spv::StorageClass storageClass,
-                                    spv::BuiltIn, bool isPrecise,
-                                    SourceLocation loc);
-  SpirvVariable *addStageBuiltinVar(const SpirvType *type,
                                     spv::StorageClass storageClass,
                                     spv::BuiltIn, bool isPrecise,
                                     SourceLocation loc);
@@ -735,8 +736,6 @@ public:
   /// and add the context to the list of constants in the module.
   SpirvConstant *getConstantInt(QualType type, llvm::APInt value,
                                 bool specConst = false);
-  SpirvConstant *getConstantInt(const SpirvType *type, llvm::APInt value,
-                                bool specConst = false);
   SpirvConstant *getConstantFloat(QualType type, llvm::APFloat value,
                                   bool specConst = false);
   SpirvConstant *getConstantBool(bool value, bool specConst = false);
@@ -746,6 +745,7 @@ public:
                        bool specConst = false);
   SpirvConstant *getConstantNull(QualType);
 
+  SpirvString *createString(llvm::StringRef str);
   SpirvString *getString(llvm::StringRef str);
 
   const HybridPointerType *getPhysicalStorageBufferType(QualType pointee);
@@ -754,7 +754,6 @@ public:
 
 public:
   std::vector<uint32_t> takeModule();
-  std::vector<uint32_t> takeModuleForDxilToSpv();
 
 protected:
   /// Only friend classes are allowed to add capability/extension to the module
@@ -815,7 +814,7 @@ private:
                                               SpirvInstruction *var);
 
 private:
-  ASTContext *astContext;
+  ASTContext &astContext;
   SpirvContext &context; ///< From which we allocate various SPIR-V object
   FeatureManager &featureManager;
 
@@ -847,8 +846,12 @@ private:
   SpirvDebugExpression *nullDebugExpr;
 
   // To avoid generating multiple OpStrings for the same string literal
-  // the SpirvBuilder will generate and reuse them.
+  // the SpirvBuilder will generate and reuse them. The empty string is
+  // kept track of separately. This is because the empty string is used
+  // as the EmptyKey and TombstoneKey for the map, prohibiting insertion
+  // of the empty string as a contained value.
   llvm::DenseMap<llvm::StringRef, SpirvString *, StringMapInfo> stringLiterals;
+  SpirvString *emptyString;
 
   /// Mapping of CTBuffers including matrix 1xN with FXC memory layout to their
   /// clone variables. We need it to avoid multiple clone variables for the same

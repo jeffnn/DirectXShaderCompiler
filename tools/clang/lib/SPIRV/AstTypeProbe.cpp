@@ -960,6 +960,14 @@ bool isConsumeStructuredBuffer(QualType type) {
   return name == "ConsumeStructuredBuffer";
 }
 
+bool isRWStructuredBuffer(QualType type) {
+  if (const RecordType *recordType = type->getAs<RecordType>()) {
+    StringRef name = recordType->getDecl()->getName();
+    return name == "RWStructuredBuffer";
+  }
+  return false;
+}
+
 bool isRWAppendConsumeSBuffer(QualType type) {
   if (const RecordType *recordType = type->getAs<RecordType>()) {
     StringRef name = recordType->getDecl()->getName();
@@ -995,6 +1003,14 @@ bool isOrContainsAKindOfStructuredOrByteBuffer(QualType type) {
     for (const auto *field : recordType->getDecl()->fields()) {
       if (isOrContainsAKindOfStructuredOrByteBuffer(field->getType()))
         return true;
+    }
+
+    if (const auto *cxxDecl = type->getAsCXXRecordDecl()) {
+      for (const auto &base : cxxDecl->bases()) {
+        if (isOrContainsAKindOfStructuredOrByteBuffer(base.getType())) {
+          return true;
+        }
+      }
     }
   }
   return false;

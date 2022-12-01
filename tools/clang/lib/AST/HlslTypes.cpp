@@ -14,6 +14,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "dxc/Support/Global.h"
+#include "dxc/DXIL/DxilSemantic.h"
 #include "clang/AST/CanonicalType.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/HlslTypes.h"
@@ -529,6 +530,11 @@ bool IsHLSLResourceType(clang::QualType type) {
     if (name == "FeedbackTexture2D" || name == "FeedbackTexture2DArray")
       return true;
 
+    if (name == "RasterizerOrderedTexture1D" || name == "RasterizerOrderedTexture2D" || name == "RasterizerOrderedTexture3D" ||
+        name == "RasterizerOrderedTexture1DArray" || name == "RasterizerOrderedTexture2DArray" ||
+        name == "RasterizerOrderedBuffer" || name == "RasterizerOrderedByteAddressBuffer" || name == "RasterizerOrderedStructuredBuffer")
+      return true;
+
     if (name == "ByteAddressBuffer" || name == "RWByteAddressBuffer")
       return true;
 
@@ -597,6 +603,60 @@ bool IsUserDefinedRecordType(clang::QualType type) {
     return true;
   }
 
+  return false;
+}
+
+static bool HasTessFactorSemantic(const ValueDecl *decl) {
+  for (const UnusualAnnotation *it : decl->getUnusualAnnotations()) {
+    if (it->getKind() == UnusualAnnotation::UA_SemanticDecl) {
+      const SemanticDecl *sd = cast<SemanticDecl>(it);
+      StringRef semanticName;
+      unsigned int index = 0;
+      Semantic::DecomposeNameAndIndex(sd->SemanticName, &semanticName, &index);
+      const hlsl::Semantic *pSemantic = hlsl::Semantic::GetByName(semanticName);
+      if (pSemantic && pSemantic->GetKind() == hlsl::Semantic::Kind::TessFactor)
+        return true;
+    }
+  }
+  return false;
+}
+
+static bool HasTessFactorSemanticRecurse(const ValueDecl *decl, QualType Ty) {
+  if (Ty->isBuiltinType() || hlsl::IsHLSLVecMatType(Ty))
+    return false;
+
+  if (const RecordType *RT = Ty->getAsStructureType()) {
+    RecordDecl *RD = RT->getDecl();
+    for (FieldDecl *fieldDecl : RD->fields()) {
+      if (HasTessFactorSemanticRecurse(fieldDecl, fieldDecl->getType()))
+        return true;
+    }
+    return false;
+  }
+
+  if (Ty->getAsArrayTypeUnsafe())
+    return HasTessFactorSemantic(decl);
+
+  return false;
+}
+
+bool IsPatchConstantFunctionDecl(const clang::FunctionDecl *FD) {
+  // This checks whether the function is structurally capable of being a patch
+  // constant function, not whether it is in fact the patch constant function
+  // for the entry point of a compiled hull shader (which may not have been
+  // seen yet). So the answer is conservative.
+  if (!FD->getReturnType()->isVoidType()) {
+    // Try to find TessFactor in return type.
+    if (HasTessFactorSemanticRecurse(FD, FD->getReturnType()))
+      return true;
+  }
+  // Try to find TessFactor in out param.
+  for (const ParmVarDecl *param : FD->params()) {
+    if (param->hasAttr<HLSLOutAttr>()) {
+      if (HasTessFactorSemanticRecurse(param, param->getType()))
+        return true;
+    }
+  }
   return false;
 }
 
@@ -723,10 +783,14 @@ bool IsIncompleteHLSLResourceArrayType(clang::ASTContext &context,
                                        clang::QualType type) {
   if (type->isIncompleteArrayType()) {
     const IncompleteArrayType *IAT = context.getAsIncompleteArrayType(type);
-    QualType EltTy = IAT->getElementType();
-    if (IsHLSLResourceType(EltTy))
-      return true;
+    type = IAT->getElementType();
   }
+
+  while (type->isArrayType())
+    type = cast<ArrayType>(type)->getElementType();
+
+  if (IsHLSLResourceType(type))
+    return true;
   return false;
 }
 

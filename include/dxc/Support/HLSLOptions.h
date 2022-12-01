@@ -123,7 +123,7 @@ public:
   llvm::StringRef OutputRootSigFile; // OPT_Frs
   llvm::StringRef OutputShaderHashFile; // OPT_Fsh
   llvm::StringRef OutputFileForDependencies; // OPT_write_dependencies_to
-  llvm::StringRef Preprocess; // OPT_P
+  std::string Preprocess; // OPT_P
   llvm::StringRef TargetProfile; // OPT_target_profile
   llvm::StringRef VariableName; // OPT_Vn
   llvm::StringRef PrivateSource; // OPT_setprivate
@@ -205,6 +205,7 @@ public:
   unsigned ScanLimit = 0; // OPT_memdep_block_scan_limit
   bool ForceZeroStoreLifetimes = false; // OPT_force_zero_store_lifetimes
   bool EnableLifetimeMarkers = false; // OPT_enable_lifetime_markers
+  bool ForceDisableLocTracking = false; // OPT_fdisable_loc_tracking
   bool EnableTemplates = false; // OPT_enable_templates
   bool EnableOperatorOverloading = false; // OPT_enable_operator_overloading
   bool StrictUDTCasting = false; // OPT_strict_udt_casting
