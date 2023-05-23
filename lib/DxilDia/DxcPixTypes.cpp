@@ -248,20 +248,14 @@ STDMETHODIMP dxil_debug_info::DxcPixStructType::GetNumFields(
     _Outptr_result_z_ DWORD *ppNumFields)
 {
   *ppNumFields = m_pStruct->getElements()->getNumOperands();
-  // DWARF lists the ancestor class, if any, as a member element.
-  // If we have an ancestor, reduce the reported number of fields
-  // by one:
+  // DWARF lists the ancestor class, if any, and member fns
+  // as a member element. If we have any such, 
+  // reduce the reported number of fields by one for each:
   for (auto *Node : m_pStruct->getElements())
   {
-    auto* pDIField = llvm::dyn_cast<llvm::DIDerivedType>(Node);
-    if (pDIField == nullptr)
-    {
-      return E_FAIL;
-    }
-    if (pDIField->getTag() == llvm::dwarf::DW_TAG_inheritance) 
-    {
+    if (Node->getTag() == llvm::dwarf::DW_TAG_inheritance ||
+        Node->getTag() == llvm::dwarf::DW_TAG_subprogram) {
       (*ppNumFields)--;
-      break;
     }
   }
   return S_OK;
@@ -273,53 +267,33 @@ STDMETHODIMP dxil_debug_info::DxcPixStructType::GetFieldByIndex(
 {
   *ppField = nullptr;
 
-  // DWARF lists the ancestor class, if any, as a member element.
-  // If we have an ancestor, skip that field when enumerating
+  // DWARF lists the ancestor class, if any, and member fns
+  // as a member element. Skip such fields when enumerating
   // by index.
 
   constexpr DWORD UnexpectedAncestorValue = static_cast<DWORD>(-1);
-  auto ElementCount = m_pStruct->getElements().size();
-  DWORD AncestorIndex = UnexpectedAncestorValue;
   DWORD ElementIndex = 0;
+  DWORD ElementSkipCount = 0;
   for (auto *Node : m_pStruct->getElements())
   {
-    auto* pDIField = llvm::dyn_cast<llvm::DIDerivedType>(Node);
-    if (pDIField == nullptr)
-    {
-      return E_FAIL;
-    }
-    if (pDIField->getTag() == llvm::dwarf::DW_TAG_inheritance) 
-    {
-      // We expect only one ancestor:
-      assert(AncestorIndex == UnexpectedAncestorValue);
-      AncestorIndex = ElementIndex;
+    if (Node->getTag() == llvm::dwarf::DW_TAG_inheritance ||
+        Node->getTag() == llvm::dwarf::DW_TAG_subprogram) {
+      ElementSkipCount++;
+    } else {
+      if (dwIndex + ElementSkipCount == ElementIndex) {
+        auto *pDIField = llvm::dyn_cast<llvm::DIDerivedType>(
+            m_pStruct->getElements()[dwIndex]);
+        if (pDIField == nullptr) {
+          return E_FAIL;
+        }
+
+        return NewDxcPixDxilDebugInfoObjectOrThrow<DxcPixStructField>(
+            ppField, m_pMalloc, m_pDxilDebugInfo, pDIField);
+      }
     }
     ElementIndex++;
   }
-
-  if(AncestorIndex != UnexpectedAncestorValue && dwIndex >= AncestorIndex) 
-  {
-    //Skip over the ancestor element:
-    dwIndex++;
-  }
-
-  if(dwIndex >= ElementCount) 
-  {
-    return E_BOUNDS;
-  }
-
-  auto* pDIField = llvm::dyn_cast<llvm::DIDerivedType>(
-      m_pStruct->getElements()[dwIndex]);
-  if (pDIField == nullptr)
-  {
-    return E_FAIL;
-  }
-
-  return NewDxcPixDxilDebugInfoObjectOrThrow<DxcPixStructField>(
-      ppField,
-      m_pMalloc,
-      m_pDxilDebugInfo,
-      pDIField);
+  return E_BOUNDS;
 }
 
 STDMETHODIMP dxil_debug_info::DxcPixStructType::GetFieldByName(
