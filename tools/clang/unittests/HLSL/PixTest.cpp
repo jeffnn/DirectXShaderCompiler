@@ -236,6 +236,7 @@ public:
   TEST_METHOD(DxcPixDxilDebugInfo_StructInheritance)
   TEST_METHOD(DxcPixDxilDebugInfo_StructContainedResource)
   TEST_METHOD(DxcPixDxilDebugInfo_StructStaticInit)
+  TEST_METHOD(DxcPixDxilDebugInfo_StructMemberFnFirst)
 
   TEST_METHOD(VirtualRegisters_InstructionCounts)
   TEST_METHOD(VirtualRegisters_AlignedOffsets)
@@ -2855,6 +2856,7 @@ void main()
       break;
     }
   }
+  VERIFY_IS_TRUE(FoundTheStruct);
 }
 
 TEST_F(PixTest, DxcPixDxilDebugInfo_StructContainedResource) {
@@ -2911,6 +2913,7 @@ void main()
       break;
     }
   }
+  VERIFY_IS_TRUE(FoundTheStruct);
 }
 
 TEST_F(PixTest, DxcPixDxilDebugInfo_StructStaticInit) {
@@ -2919,7 +2922,6 @@ TEST_F(PixTest, DxcPixDxilDebugInfo_StructStaticInit) {
 
   const char *hlsl = R"(
 RWStructuredBuffer<float> floatRWUAV: register(u0);
-Texture2D srv2DTexture : register(t0, space1);
 struct AStruct
 {
     float f;
@@ -2927,20 +2929,19 @@ struct AStruct
     {
         AStruct ret;
         ret.f = fi;
+        for(int i =0; i < 4; ++i)
+        {
+          ret.f += floatRWUAV[i+2];
+        }
         return ret;
     }
 };
-
-float AFunction(AStruct theStruct)
-{
-  return theStruct.f; // InterestingLine
-}
 
 [numthreads(1, 1, 1)]
 void main()
 {
   AStruct aStruct = AStruct::Init(floatRWUAV[1]);
-  floatRWUAV[0] = AFunction(aStruct);
+  floatRWUAV[0] = aStruct.f; // InterestingLine
 }
 
 )";
@@ -2957,19 +2958,80 @@ void main()
     VERIFY_SUCCEEDED(liveVariables->GetVariableByIndex(i, &variable));
     CComBSTR name;
     variable->GetName(&name);
-    if (0 == wcscmp(name, L"theStruct")) {
+    if (0 == wcscmp(name, L"aStruct")) {
       FoundTheStruct = true;
       CComPtr<IDxcPixDxilStorage> storage;
       VERIFY_SUCCEEDED(variable->GetStorage(&storage));
       std::vector<VariableComponentInfo> ActualVariableComponents;
-      VERIFY_IS_TRUE(AddStorageComponents(storage, L"theStruct",
+      VERIFY_IS_TRUE(AddStorageComponents(storage, L"aStruct",
                                           ActualVariableComponents));
       std::vector<VariableComponentInfo> Expected;
-      Expected.push_back({L"theStruct.f", L"float"});
+      Expected.push_back({L"aStruct.f", L"float"});
       VERIFY_IS_TRUE(ContainedBy(ActualVariableComponents, Expected));
       break;
     }
   }
+  VERIFY_IS_TRUE(FoundTheStruct);
+}
+
+TEST_F(PixTest, DxcPixDxilDebugInfo_StructMemberFnFirst) {
+  if (m_ver.SkipDxilVersion(1, 5))
+    return;
+
+  const char *hlsl = R"(
+RWStructuredBuffer<float> floatRWUAV: register(u0);
+struct AStruct
+{
+    void Init(float fi);
+    float f;
+};
+
+void AStruct::Init(float fi)
+{
+    AStruct ret;
+    f = fi;
+    for(int i =0; i < 4; ++i)
+    {
+      f += floatRWUAV[i+2];
+    }
+}
+  
+[numthreads(1, 1, 1)]
+void main()
+{
+  AStruct aStruct;
+  aStruct.Init(floatRWUAV[1]);
+  floatRWUAV[0] = aStruct.f; // InterestingLine
+}
+
+)";
+  auto dxilDebugger = CompileAndCreateDxcDebug(hlsl, L"cs_6_6");
+
+  auto liveVariables =
+      GetLiveVariablesAt(hlsl, "InterestingLine", dxilDebugger);
+
+  DWORD count;
+  VERIFY_SUCCEEDED(liveVariables->GetCount(&count));
+  bool FoundTheStruct = false;
+  for (DWORD i = 0; i < count; ++i) {
+    CComPtr<IDxcPixVariable> variable;
+    VERIFY_SUCCEEDED(liveVariables->GetVariableByIndex(i, &variable));
+    CComBSTR name;
+    variable->GetName(&name);
+    if (0 == wcscmp(name, L"aStruct")) {
+      FoundTheStruct = true;
+      CComPtr<IDxcPixDxilStorage> storage;
+      VERIFY_SUCCEEDED(variable->GetStorage(&storage));
+      std::vector<VariableComponentInfo> ActualVariableComponents;
+      VERIFY_IS_TRUE(AddStorageComponents(storage, L"aStruct",
+                                          ActualVariableComponents));
+      std::vector<VariableComponentInfo> Expected;
+      Expected.push_back({L"aStruct.f", L"float"});
+      VERIFY_IS_TRUE(ContainedBy(ActualVariableComponents, Expected));
+      break;
+    }
+  }
+  VERIFY_IS_TRUE(FoundTheStruct);
 }
 
 CComPtr<IDxcBlob> PixTest::RunShaderAccessTrackingPass(IDxcBlob *blob) {

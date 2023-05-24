@@ -282,7 +282,7 @@ STDMETHODIMP dxil_debug_info::DxcPixStructType::GetFieldByIndex(
     } else {
       if (dwIndex + ElementSkipCount == ElementIndex) {
         auto *pDIField = llvm::dyn_cast<llvm::DIDerivedType>(
-            m_pStruct->getElements()[dwIndex]);
+            m_pStruct->getElements()[ElementIndex]);
         if (pDIField == nullptr) {
           return E_FAIL;
         }
