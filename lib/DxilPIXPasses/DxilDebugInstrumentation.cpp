@@ -150,6 +150,7 @@ enum DebugShaderModifierRecordType {
   // here in order to keep this file more in-sync with the debugger source.
   // (As of this writing, the debugger still supports older versions of this
   // pass which produced finer-grained debug packets.)
+  DebugShaderModifierRecordTypeDXILStepLongvector = 248,
   DebugShaderModifierRecordTypeDXILStepBlock = 249,
   DebugShaderModifierRecordTypeDXILStepRet = 250,
   DebugShaderModifierRecordTypeDXILStepVoid = 251,
@@ -167,8 +168,8 @@ enum DebugShaderModifierRecordType {
 struct DebugShaderModifierRecordHeader {
   union {
     struct {
-      uint32_t SizeDwords : 4;
-      uint32_t Flags : 4;
+      uint32_t SizeDwordsLowNybble : 4;
+      uint32_t SizeDwordsHighNybble : 4;
       uint32_t Type : 8;
       uint32_t HeaderPayload : 16;
     } Details;
@@ -180,8 +181,8 @@ struct DebugShaderModifierRecordHeader {
 struct DebugShaderModifierRecordDXILStepBase {
   union {
     struct {
-      uint32_t SizeDwords : 4;
-      uint32_t Flags : 4;
+      uint32_t SizeDwordsLowNybble : 4;
+      uint32_t SizeDwordsHighNybble : 4;
       uint32_t Type : 8;
       uint32_t Opcode : 16;
     } Details;
@@ -221,6 +222,21 @@ struct DebugShaderModifierRecordDXILStep
 template <>
 struct DebugShaderModifierRecordDXILStep<void>
     : public DebugShaderModifierRecordDXILStepBase {};
+
+struct LongvectorTemplateParam
+{
+};
+
+template <>
+struct DebugShaderModifierRecordDXILStep<LongvectorTemplateParam>
+    : public DebugShaderModifierRecordDXILStepBase 
+{
+    // The largest long vector element type is 32 bits, and its
+    // max length is 128, according to spec.
+    uint32_t values[128];
+};
+
+
 #pragma pack(pop)
 
 uint32_t
@@ -314,6 +330,13 @@ private:
   uint32_t m_RemainingReservedSpaceInBytes = 0;
 
 public:
+
+    struct RecordTypeDatum {
+        DebugShaderModifierRecordType Type;
+        uint32_t PayloadSize;
+        const char* AsString;
+    };
+
   static char ID; // Pass identification, replacement for typeid
   explicit DxilDebugInstrumentation() : ModulePass(ID) {}
   StringRef getPassName() const override {
@@ -372,6 +395,15 @@ private:
       llvm::SmallPtrSetImpl<Value *> const &RayQueryHandles);
   uint32_t
   CountBlockPayloadBytes(std::vector<InstructionToInstrument> const &IsAndTs);
+  static const DxilDebugInstrumentation::RecordTypeDatum DxilDebugInstrumentation::RecordTypeData[];
+
+  struct ValueAndType {
+      Value* ValueToWriteToDebugMemory;
+      DebugShaderModifierRecordType ValueType;
+  };
+  static std::optional<RecordTypeDatum>
+      FindDatum(ValueAndType const& IandT);
+  static uint32_t GetInstructionPayloadForVariableSize(Value*);
 };
 
 void DxilDebugInstrumentation::applyOptions(PassOptions O) {
@@ -856,92 +888,130 @@ void DxilDebugInstrumentation::reserveDebugEntrySpace(BuilderContext &BC,
       BC.Builder.CreateOr(Masked, values.OffsetOr, "ORedForUAVStart");
 }
 
+static uint32_t GetFakeVectorCount(Instruction* I)
+{
+    uint32_t count = 32;
+    uint32_t instNum = 0;
+    if(I != nullptr)
+        if (pix_dxil::PixDxilInstNum::FromInst(I, &instNum))
+            count = instNum % 64 + 65;
+    return count;
+}
+
 uint32_t DxilDebugInstrumentation::addDebugEntryValue(BuilderContext &BC,
                                                       Value *TheValue) {
   assert(m_RemainingReservedSpaceInBytes > 0);
 
   uint32_t BytesToBeEmitted = 0;
 
-  auto TheValueTypeID = TheValue->getType()->getTypeID();
-  if (TheValueTypeID == Type::TypeID::DoubleTyID) {
-    Function *SplitDouble =
-        BC.HlslOP->GetOpFunc(OP::OpCode::SplitDouble, TheValue->getType());
-    Constant *SplitDoubleOpcode =
-        BC.HlslOP->GetU32Const((unsigned)DXIL::OpCode::SplitDouble);
-    auto SplitDoubleIntruction = BC.Builder.CreateCall(
-        SplitDouble, {SplitDoubleOpcode, TheValue}, "SplitDouble");
-    auto LowBits =
-        BC.Builder.CreateExtractValue(SplitDoubleIntruction, 0, "LowBits");
-    auto HighBits =
-        BC.Builder.CreateExtractValue(SplitDoubleIntruction, 1, "HighBits");
-    // addDebugEntryValue(BC, BC.HlslOP->GetU32Const(0)); // padding
-    addDebugEntryValue(BC, LowBits);
-    addDebugEntryValue(BC, HighBits);
-    BytesToBeEmitted += 8;
-  } else if (TheValueTypeID == Type::TypeID::IntegerTyID &&
-             TheValue->getType()->getIntegerBitWidth() == 64) {
-    auto LowBits =
-        BC.Builder.CreateTrunc(TheValue, Type::getInt32Ty(BC.Ctx), "LowBits");
-    auto ShiftedBits = BC.Builder.CreateLShr(TheValue, 32, "ShiftedBits");
-    auto HighBits = BC.Builder.CreateTrunc(
-        ShiftedBits, Type::getInt32Ty(BC.Ctx), "HighBits");
-    // addDebugEntryValue(BC, BC.HlslOP->GetU32Const(0)); // padding
-    addDebugEntryValue(BC, LowBits);
-    addDebugEntryValue(BC, HighBits);
-    BytesToBeEmitted += 8;
-  } else if (TheValueTypeID == Type::TypeID::IntegerTyID &&
-             (TheValue->getType()->getIntegerBitWidth() < 32)) {
-    auto As32 =
-        BC.Builder.CreateZExt(TheValue, Type::getInt32Ty(BC.Ctx), "As32");
-    BytesToBeEmitted += addDebugEntryValue(BC, As32);
-  } else if (TheValueTypeID == Type::TypeID::HalfTyID) {
-    auto AsFloat =
-        BC.Builder.CreateFPCast(TheValue, Type::getFloatTy(BC.Ctx), "AsFloat");
-    BytesToBeEmitted += addDebugEntryValue(BC, AsFloat);
-  } else {
-    Function *StoreValue =
-        BC.HlslOP->GetOpFunc(OP::OpCode::RawBufferStore,
-                             TheValue->getType()); // Type::getInt32Ty(BC.Ctx));
-    Constant *StoreValueOpcode =
-        BC.HlslOP->GetU32Const((unsigned)DXIL::OpCode::RawBufferStore);
-    UndefValue *Undef32Arg = UndefValue::get(Type::getInt32Ty(BC.Ctx));
-    UndefValue *UndefArg = nullptr;
-    if (TheValueTypeID == Type::TypeID::IntegerTyID) {
-      UndefArg = UndefValue::get(Type::getInt32Ty(BC.Ctx));
-    } else if (TheValueTypeID == Type::TypeID::FloatTyID) {
-      UndefArg = UndefValue::get(Type::getFloatTy(BC.Ctx));
-    } else {
-      // The above are the only two valid types for a UAV store
-      assert(false);
-    }
-    BytesToBeEmitted += 4;
-    Constant *WriteMask_X = BC.HlslOP->GetI8Const(1);
-
-    auto &values = m_FunctionToValues[BC.Builder.GetInsertBlock()->getParent()];
-    Constant *RawBufferStoreAlignment = BC.HlslOP->GetU32Const(4);
-
-    (void)BC.Builder.CreateCall(
-        StoreValue, {StoreValueOpcode,    // i32 opcode
-                     values.UAVHandle,    // %dx.types.Handle, ; resource handle
-                     values.CurrentIndex, // i32 c0: index in bytes into UAV
-                     Undef32Arg,          // i32 c1: unused
-                     TheValue,
-                     UndefArg, // unused values
-                     UndefArg, // unused values
-                     UndefArg, // unused values
-                     WriteMask_X, RawBufferStoreAlignment});
-
-    assert(m_RemainingReservedSpaceInBytes >= 4); // check for underflow
-    m_RemainingReservedSpaceInBytes -= 4;
-
-    if (m_RemainingReservedSpaceInBytes != 0) {
-      values.CurrentIndex =
-          BC.Builder.CreateAdd(values.CurrentIndex, BC.HlslOP->GetU32Const(4));
-    } else {
-      values.CurrentIndex = nullptr;
-    }
+  if (auto* Ld = llvm::dyn_cast<llvm::LoadInst>(TheValue)) {
+      if (llvm::isa<ConstantExpr>(Ld->getPointerOperand())) {
+          auto* constant = llvm::cast<ConstantExpr>(Ld->getPointerOperand());
+          if (constant->getOpcode() == Instruction::GetElementPtr) {
+              PIXPassHelpers::ScopedInstruction asInstr(constant->getAsInstruction());
+              auto* GEP = llvm::cast<GetElementPtrInst>(asInstr.Get());
+              if (GEP->getPointerOperand()->getName().equals("dx.nothing.a")) {
+                  // These debug-only loads are interesting as instructions to
+                  // step though where otherwise no step might exist for the
+                  // given HLSL lines, so we include them in the instrumentation:
+                  uint32_t count = GetFakeVectorCount(Ld);
+                  for (uint32_t i = 0; i < count; ++i)
+                  {
+                      BytesToBeEmitted += addDebugEntryValue(BC, BC.HlslOP->GetU32Const(i));
+                  }
+              }
+          }
+      }
   }
+  else
+  {
+      auto TheValueTypeID = TheValue->getType()->getTypeID();
+      if (TheValueTypeID == Type::TypeID::DoubleTyID) {
+          Function* SplitDouble =
+              BC.HlslOP->GetOpFunc(OP::OpCode::SplitDouble, TheValue->getType());
+          Constant* SplitDoubleOpcode =
+              BC.HlslOP->GetU32Const((unsigned)DXIL::OpCode::SplitDouble);
+          auto SplitDoubleIntruction = BC.Builder.CreateCall(
+              SplitDouble, { SplitDoubleOpcode, TheValue }, "SplitDouble");
+          auto LowBits =
+              BC.Builder.CreateExtractValue(SplitDoubleIntruction, 0, "LowBits");
+          auto HighBits =
+              BC.Builder.CreateExtractValue(SplitDoubleIntruction, 1, "HighBits");
+          // addDebugEntryValue(BC, BC.HlslOP->GetU32Const(0)); // padding
+          addDebugEntryValue(BC, LowBits);
+          addDebugEntryValue(BC, HighBits);
+          BytesToBeEmitted += 8;
+      }
+      else if (TheValueTypeID == Type::TypeID::IntegerTyID &&
+          TheValue->getType()->getIntegerBitWidth() == 64) {
+          auto LowBits =
+              BC.Builder.CreateTrunc(TheValue, Type::getInt32Ty(BC.Ctx), "LowBits");
+          auto ShiftedBits = BC.Builder.CreateLShr(TheValue, 32, "ShiftedBits");
+          auto HighBits = BC.Builder.CreateTrunc(
+              ShiftedBits, Type::getInt32Ty(BC.Ctx), "HighBits");
+          // addDebugEntryValue(BC, BC.HlslOP->GetU32Const(0)); // padding
+          addDebugEntryValue(BC, LowBits);
+          addDebugEntryValue(BC, HighBits);
+          BytesToBeEmitted += 8;
+      }
+      else if (TheValueTypeID == Type::TypeID::IntegerTyID &&
+          (TheValue->getType()->getIntegerBitWidth() < 32)) {
+          auto As32 =
+              BC.Builder.CreateZExt(TheValue, Type::getInt32Ty(BC.Ctx), "As32");
+          BytesToBeEmitted += addDebugEntryValue(BC, As32);
+      }
+      else if (TheValueTypeID == Type::TypeID::HalfTyID) {
+          auto AsFloat =
+              BC.Builder.CreateFPCast(TheValue, Type::getFloatTy(BC.Ctx), "AsFloat");
+          BytesToBeEmitted += addDebugEntryValue(BC, AsFloat);
+      }
+      else {
+          Function* StoreValue =
+              BC.HlslOP->GetOpFunc(OP::OpCode::RawBufferStore,
+                  TheValue->getType()); // Type::getInt32Ty(BC.Ctx));
+          Constant* StoreValueOpcode =
+              BC.HlslOP->GetU32Const((unsigned)DXIL::OpCode::RawBufferStore);
+          UndefValue* Undef32Arg = UndefValue::get(Type::getInt32Ty(BC.Ctx));
+          UndefValue* UndefArg = nullptr;
+          if (TheValueTypeID == Type::TypeID::IntegerTyID) {
+              UndefArg = UndefValue::get(Type::getInt32Ty(BC.Ctx));
+          }
+          else if (TheValueTypeID == Type::TypeID::FloatTyID) {
+              UndefArg = UndefValue::get(Type::getFloatTy(BC.Ctx));
+          }
+          else {
+              // The above are the only two valid types for a UAV store
+              assert(false);
+          }
+          BytesToBeEmitted += 4;
+          Constant* WriteMask_X = BC.HlslOP->GetI8Const(1);
 
+          auto& values = m_FunctionToValues[BC.Builder.GetInsertBlock()->getParent()];
+          Constant* RawBufferStoreAlignment = BC.HlslOP->GetU32Const(4);
+
+          (void)BC.Builder.CreateCall(
+              StoreValue, { StoreValueOpcode,    // i32 opcode
+                           values.UAVHandle,    // %dx.types.Handle, ; resource handle
+                           values.CurrentIndex, // i32 c0: index in bytes into UAV
+                           Undef32Arg,          // i32 c1: unused
+                           TheValue,
+                           UndefArg, // unused values
+                           UndefArg, // unused values
+                           UndefArg, // unused values
+                           WriteMask_X, RawBufferStoreAlignment });
+
+          assert(m_RemainingReservedSpaceInBytes >= 4); // check for underflow
+          m_RemainingReservedSpaceInBytes -= 4;
+
+          if (m_RemainingReservedSpaceInBytes != 0) {
+              values.CurrentIndex =
+                  BC.Builder.CreateAdd(values.CurrentIndex, BC.HlslOP->GetU32Const(4));
+          }
+          else {
+              values.CurrentIndex = nullptr;
+          }
+      }
+  }
   return BytesToBeEmitted;
 }
 
@@ -949,9 +1019,8 @@ void DxilDebugInstrumentation::addInvocationStartMarker(BuilderContext &BC) {
   DebugShaderModifierRecordHeader marker{{{0, 0, 0, 0}}, 0};
   reserveDebugEntrySpace(BC, sizeof(marker));
 
-  marker.Header.Details.SizeDwords =
+  marker.Header.Details.SizeDwordsLowNybble =
       DebugShaderModifierRecordPayloadSizeDwords(sizeof(marker));
-  marker.Header.Details.Flags = 0;
   marker.Header.Details.Type =
       DebugShaderModifierRecordTypeInvocationStartMarker;
   addDebugEntryValue(BC, BC.HlslOP->GetU32Const(marker.Header.u32Header));
@@ -969,7 +1038,7 @@ void DxilDebugInstrumentation::addStepEntryForType(
 
   auto &values = m_FunctionToValues[BC.Builder.GetInsertBlock()->getParent()];
 
-  step.Header.Details.SizeDwords =
+  step.Header.Details.SizeDwordsLowNybble =
       DebugShaderModifierRecordPayloadSizeDwords(sizeof(step));
   step.Header.Details.Type = static_cast<uint8_t>(RecordType);
   addDebugEntryValue(BC, BC.HlslOP->GetU32Const(step.Header.u32Header));
@@ -1074,26 +1143,6 @@ std::optional<InstructionAndType> DxilDebugInstrumentation::addStepDebugEntry(
     return addStoreStepDebugEntry(BC, St);
   }
 
-  if (auto *Ld = llvm::dyn_cast<llvm::LoadInst>(Inst)) {
-    if (llvm::isa<ConstantExpr>(Ld->getPointerOperand())) {
-      auto *constant = llvm::cast<ConstantExpr>(Ld->getPointerOperand());
-      if (constant->getOpcode() == Instruction::GetElementPtr) {
-        PIXPassHelpers::ScopedInstruction asInstr(constant->getAsInstruction());
-        auto *GEP = llvm::cast<GetElementPtrInst>(asInstr.Get());
-        if (GEP->getPointerOperand()->getName().equals("dx.nothing.a")) {
-          // These debug-only loads are interesting as instructions to
-          // step though where otherwise no step might exist for the
-          // given HLSL lines, so we include them in the instrumentation:
-          InstructionAndType ret{};
-          ret.Inst = Inst;
-          ret.InstructionOrdinal = InstNum;
-          ret.Type = DebugShaderModifierRecordTypeDXILStepVoid;
-          return ret;
-        }
-      }
-    }
-  }
-
   std::uint32_t RegNum;
   if (!pix_dxil::PixDxilReg::FromInst(Inst, &RegNum)) {
     if (Inst->getOpcode() == Instruction::Ret) {
@@ -1136,6 +1185,27 @@ DxilDebugInstrumentation::addStepDebugEntryValue(BuilderContext *BC,
                                                  Value *V,
                                                  std::uint32_t ValueOrdinal,
                                                  Value *ValueOrdinalIndex) {
+
+    if (auto* Ld = llvm::dyn_cast<llvm::LoadInst>(V)) {
+        if (llvm::isa<ConstantExpr>(Ld->getPointerOperand())) {
+            auto* constant = llvm::cast<ConstantExpr>(Ld->getPointerOperand());
+            if (constant->getOpcode() == Instruction::GetElementPtr) {
+                PIXPassHelpers::ScopedInstruction asInstr(constant->getAsInstruction());
+                auto* GEP = llvm::cast<GetElementPtrInst>(asInstr.Get());
+                if (GEP->getPointerOperand()->getName().equals("dx.nothing.a")) {
+                    // These debug-only loads are interesting as instructions to
+                    // step though where otherwise no step might exist for the
+                    // given HLSL lines, so we include them in the instrumentation:
+                    if (BC != nullptr)
+                        addStepEntryForType<LongvectorTemplateParam>(DebugShaderModifierRecordTypeDXILStepLongvector, *BC,
+                            InstNum, nullptr, 0, 0);
+                    return DebugShaderModifierRecordTypeDXILStepLongvector;
+                }
+            }
+        }
+    }
+
+
   const Type::TypeID ID = V->getType()->getTypeID();
 
   switch (ID) {
@@ -1235,25 +1305,44 @@ bool DxilDebugInstrumentation::runOnModule(Module &M) {
   return modified;
 }
 
-struct RecordTypeDatum {
-  DebugShaderModifierRecordType Type;
-  uint32_t PayloadSize;
-  const char *AsString;
-};
+uint32_t DxilDebugInstrumentation::GetInstructionPayloadForVariableSize(Value* Val)
+{
+    if (auto* Ld = llvm::dyn_cast<llvm::LoadInst>(Val)) {
+        if (llvm::isa<ConstantExpr>(Ld->getPointerOperand())) {
+            auto* constant = llvm::cast<ConstantExpr>(Ld->getPointerOperand());
+            if (constant->getOpcode() == Instruction::GetElementPtr) {
+                PIXPassHelpers::ScopedInstruction asInstr(constant->getAsInstruction());
+                auto* GEP = llvm::cast<GetElementPtrInst>(asInstr.Get());
+                if (GEP->getPointerOperand()->getName().equals("dx.nothing.a")) {
+                    uint32_t count = GetFakeVectorCount(Ld);
+                    return count * sizeof(uint32_t);
+                }
+            }
+        }
+    }
+    return static_cast<uint32_t>(-1);
+}
 
-static const RecordTypeDatum RecordTypeData[] = {
+const DxilDebugInstrumentation::RecordTypeDatum DxilDebugInstrumentation::RecordTypeData[] = {
     {DebugShaderModifierRecordTypeDXILStepRet, 0, "r"},
     {DebugShaderModifierRecordTypeDXILStepVoid, 0, "v"},
     {DebugShaderModifierRecordTypeDXILStepFloat, 4, "f"},
     {DebugShaderModifierRecordTypeDXILStepUint32, 4, "3"},
     {DebugShaderModifierRecordTypeDXILStepUint64, 8, "6"},
-    {DebugShaderModifierRecordTypeDXILStepDouble, 8, "d"}};
+    {DebugShaderModifierRecordTypeDXILStepDouble, 8, "d"},
+    {DebugShaderModifierRecordTypeDXILStepLongvector, static_cast<uint32_t>(-1), "l"}
+};
 
-std::optional<RecordTypeDatum const *>
-FindDatum(DebugShaderModifierRecordType RecordType) {
+std::optional<DxilDebugInstrumentation::RecordTypeDatum>
+DxilDebugInstrumentation::FindDatum(ValueAndType const& IandT) {
   for (auto const &datum : RecordTypeData) {
-    if (datum.Type == RecordType) {
-      return &datum;
+    if (datum.Type == IandT.ValueType) {
+        RecordTypeDatum ret = datum;
+        if (ret.PayloadSize == static_cast<uint32_t>(-1))
+        {
+            ret.PayloadSize = GetInstructionPayloadForVariableSize(IandT.ValueToWriteToDebugMemory);
+        }
+      return ret;
     }
   }
   return std::nullopt;
@@ -1263,19 +1352,11 @@ uint32_t DxilDebugInstrumentation::CountBlockPayloadBytes(
     std::vector<InstructionToInstrument> const &IsAndTs) {
   uint32_t count = 0;
   for (auto const &IandT : IsAndTs) {
-    auto datum = FindDatum(IandT.ValueType);
+      auto datum = FindDatum({ IandT.ValueToWriteToDebugMemory, IandT.ValueType });
     if (datum)
-      count += (*datum)->PayloadSize;
+      count += datum->PayloadSize;
   }
   return count;
-}
-
-const char *TypeString(InstructionAndType const &IandT) {
-  auto datum = FindDatum(IandT.Type);
-  if (datum)
-    return (*datum)->AsString;
-  assert(false);
-  return "v";
 }
 
 Instruction *FindFirstNonPhiInstruction(Instruction *I) {
@@ -1294,7 +1375,7 @@ Instruction *FindFirstNonPhiInstruction(Instruction *I) {
 // Instructions are delimited by ; The fields within the instruction
 // (delimited by ,) are, in order:
 // -instruction ordinal
-// -data type (r=ret, v=void, f=float, 3=int32, 6=int64, d=double)
+// -data type (r=ret, v=void, f=float, 3=int32, 6=int64, d=double, l=longvec)
 // -scalar register number
 // -alloca/scalar indicator:
 // r == ret instruction
@@ -1306,6 +1387,7 @@ Instruction *FindFirstNonPhiInstruction(Instruction *I) {
 // d == A dynamic index added to the static base index. Base index
 //      is appended to this record. The corresponding debug entry is
 //      the dynamic index into that alloca.
+// l == A long vector, followed by <byte-count>
 // v == A void terminator or other void-valued instruction. No
 //      corresponding data in the debug output.
 // If indicator is "a", a string of the form [base+index] for the alloca
@@ -1366,10 +1448,20 @@ DxilDebugInstrumentation::FindInstrumentableInstructionsInBlock(
         DebugOutputForThisInstruction.ValueToWriteToDebugMemory = IandT->Inst;
       }
 
+      std::string dataTypeAndSizeEncoded;
+      auto dataTypeAndSize = FindDatum({ IandT->Inst, IandT->Type });
+      if (dataTypeAndSize)
+      {
+          dataTypeAndSizeEncoded = dataTypeAndSize->AsString;
+          if (IandT->Type == DebugShaderModifierRecordTypeDXILStepLongvector)
+          {
+              dataTypeAndSizeEncoded += std::to_string(dataTypeAndSize->PayloadSize);
+          }
+      }
       *OSOverride << std::to_string(IandT->InstructionOrdinal) << ","
-                  << TypeString(*IandT) << ","
-                  << std::to_string(IandT->RegisterNumber) << ","
-                  << IndexingToken;
+          << dataTypeAndSizeEncoded << ","
+          << std::to_string(IandT->RegisterNumber) << ","
+          << IndexingToken;
       if (RegisterOrStaticIndex) {
         *OSOverride << "," << *RegisterOrStaticIndex;
       }
